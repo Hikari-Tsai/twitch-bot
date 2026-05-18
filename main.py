@@ -1,0 +1,339 @@
+import os
+import json
+import time
+import random
+import urllib.request
+from collections import defaultdict
+from pathlib import Path
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from twitchio import eventsub
+from twitchio.ext import commands
+
+
+load_dotenv()
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+TWITCH_BOT_ID = os.getenv("TWITCH_BOT_ID")
+TWITCH_OWNER_ID = os.getenv("TWITCH_OWNER_ID") or os.getenv("TWITCH_CHANNEL_ID")
+TWITCH_TOKEN = os.getenv("TWITCH_TOKEN")
+TWITCH_BOT_NICK = os.getenv("TWITCH_BOT_NICK")
+TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL")
+
+ALWAYS_REPLY = env_bool("ALWAYS_REPLY")
+REPLY_PROBABILITY = float(os.getenv("REPLY_PROBABILITY", "0.25"))
+
+GLOBAL_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_SECONDS", "15"))
+USER_COOLDOWN_SECONDS = int(os.getenv("USER_COOLDOWN_SECONDS", "60"))
+MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "150"))
+MAX_REPLY_LENGTH = int(os.getenv("MAX_REPLY_LENGTH", "120"))
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+LLM_REPLY_FILTER_ENABLED = env_bool("LLM_REPLY_FILTER_ENABLED", True)
+LLM_REPLY_FILTER_MODEL = os.getenv("LLM_REPLY_FILTER_MODEL", OPENAI_MODEL)
+PROMPT_PATH = Path(os.getenv("PROMPT_PATH", "prompt/system_prompt.txt"))
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+last_global_reply_at = 0.0
+last_user_reply_at = defaultdict(float)
+
+
+BLACKLIST_USERS = {
+    # "some_bad_user",
+}
+
+IGNORE_PREFIXES = (
+    "!",
+    "/",
+)
+
+IGNORE_KEYWORDS = (
+    "http://",
+    "https://",
+    "discord.gg",
+)
+
+
+FORCE_TRIGGERS = (
+    "小助手",
+    "bot",
+    "@小助手",
+    "帕寶",
+    "@帕寶",
+)
+
+
+def require_env(name: str, value: str | None) -> str:
+    if not value:
+        raise RuntimeError(f"缺少必要環境變數：{name}")
+
+    return value
+
+
+def require_twitch_auth() -> None:
+    if not TWITCH_TOKEN and not TWITCH_CLIENT_SECRET:
+        raise RuntimeError("缺少 Twitch 驗證資訊：請設定 TWITCH_TOKEN，或設定 TWITCH_CLIENT_SECRET")
+
+
+def normalize_twitch_token(token: str | None) -> str | None:
+    if not token:
+        return None
+
+    token = token.strip()
+    if token.lower().startswith("oauth:"):
+        return token.split(":", 1)[1]
+
+    return token
+
+
+def validate_twitch_token_scopes() -> None:
+    token = normalize_twitch_token(TWITCH_TOKEN)
+    if not token:
+        return
+
+    request = urllib.request.Request(
+        "https://id.twitch.tv/oauth2/validate",
+        headers={"Authorization": f"OAuth {token}"},
+    )
+
+    with urllib.request.urlopen(request, timeout=15) as response:
+        token_data = json.load(response)
+
+    scopes = set(token_data.get("scopes") or [])
+    required_scopes = {"user:read:chat", "user:write:chat"}
+    missing_scopes = sorted(required_scopes - scopes)
+    token_user_id = token_data.get("user_id")
+
+    if missing_scopes:
+        raise RuntimeError(
+            "TWITCH_TOKEN 缺少必要 scope："
+            + ", ".join(missing_scopes)
+            + "。請重新產生 token，scope 至少需要 user:read:chat 和 user:write:chat。"
+        )
+
+    if TWITCH_BOT_ID and token_user_id != TWITCH_BOT_ID:
+        raise RuntimeError(
+            f"TWITCH_BOT_ID 與 TWITCH_TOKEN 使用者不一致："
+            f"TWITCH_BOT_ID={TWITCH_BOT_ID}，但 token user_id={token_user_id}。"
+            "請把 TWITCH_BOT_ID 改成 token 所屬 bot 帳號的數字 ID。"
+        )
+
+
+def has_force_trigger(message: str) -> bool:
+    lowered = message.lower()
+    return any(trigger.lower() in lowered for trigger in FORCE_TRIGGERS)
+
+
+def load_system_prompt() -> str:
+    if not PROMPT_PATH.exists():
+        raise FileNotFoundError(f"找不到 prompt 檔案：{PROMPT_PATH}")
+
+    return PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+
+def should_ignore_message(username: str, message: str) -> bool:
+    username = username.lower()
+    text = message.strip()
+
+    if not text:
+        return True
+
+    if username in BLACKLIST_USERS:
+        return True
+
+    if len(text) > MAX_INPUT_LENGTH:
+        return True
+
+    if text.startswith(IGNORE_PREFIXES):
+        return True
+
+    lowered = text.lower()
+
+    if any(keyword in lowered for keyword in IGNORE_KEYWORDS):
+        return True
+
+    return False
+
+
+def should_reply(username: str, message: str) -> bool:
+    global last_global_reply_at
+
+    now = time.time()
+
+    if now - last_global_reply_at < GLOBAL_COOLDOWN_SECONDS:
+        return False
+
+    if now - last_user_reply_at[username] < USER_COOLDOWN_SECONDS:
+        return False
+
+    if has_force_trigger(message):
+        return True
+
+    if ALWAYS_REPLY:
+        return True
+
+    return random.random() < REPLY_PROBABILITY
+
+
+def should_reply_by_llm(username: str, message: str) -> tuple[bool, str]:
+    response = openai_client.responses.create(
+        model=LLM_REPLY_FILTER_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "你是 Twitch 聊天室機器人的回覆判斷器。"
+                    "請判斷這則訊息是否值得讓機器人在聊天室公開回覆。"
+                    "只有在觀眾明確詢問、呼叫機器人、需要簡短互動、或內容適合延續直播氣氛時才回覆。"
+                    "閒聊碎片、單純打招呼、無上下文短句、洗版、表情符號、網址、指令、或不需要 bot 介入的訊息不要回覆。"
+                    "只輸出 JSON，格式為：{\"should_reply\": true/false, \"reason\": \"簡短原因\"}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"聊天室觀眾 {username} 說：{message}",
+            },
+        ],
+    )
+
+    try:
+        result = json.loads(response.output_text)
+    except json.JSONDecodeError:
+        print(f"LLM filter parse error: {response.output_text}")
+        return False, "LLM 判斷格式錯誤"
+
+    should_reply_value = result.get("should_reply")
+    if isinstance(should_reply_value, bool):
+        should_send = should_reply_value
+    elif isinstance(should_reply_value, str):
+        should_send = should_reply_value.strip().lower() == "true"
+    else:
+        should_send = False
+
+    return should_send, str(result.get("reason", "")).strip()
+
+
+def trim_reply(text: str) -> str:
+    text = text.strip().replace("\n", " ")
+
+    if len(text) > MAX_REPLY_LENGTH:
+        text = text[: MAX_REPLY_LENGTH - 3] + "..."
+
+    return text
+
+
+def log_chat_message(username: str, message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    channel = TWITCH_CHANNEL or TWITCH_OWNER_ID or "unknown"
+    print(f"[{timestamp}] chat #{channel} {username}: {message}", flush=True)
+
+
+def ask_gpt(username: str, message: str) -> str:
+    system_prompt = load_system_prompt()
+
+    response = openai_client.responses.create(
+        model=OPENAI_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"聊天室觀眾 {username} 說：{message}\n\n"
+                    "請用適合直播聊天室的方式簡短回應。"
+                ),
+            },
+        ],
+    )
+
+    return trim_reply(response.output_text)
+
+
+class GPTTwitchBot(commands.Bot):
+    def __init__(self):
+        require_twitch_auth()
+
+        super().__init__(
+            client_id=require_env("TWITCH_CLIENT_ID", TWITCH_CLIENT_ID),
+            client_secret=TWITCH_CLIENT_SECRET or "",
+            bot_id=require_env("TWITCH_BOT_ID", TWITCH_BOT_ID),
+            owner_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
+            prefix="!",
+        )
+
+    async def setup_hook(self):
+        payload = eventsub.ChatMessageSubscription(
+            broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
+            user_id=require_env("TWITCH_BOT_ID", TWITCH_BOT_ID),
+        )
+        await self.subscribe_websocket(payload=payload)
+
+    async def event_ready(self):
+        print(f"Logged in as {TWITCH_BOT_NICK or TWITCH_BOT_ID}")
+        print(f"Connected to channel: {TWITCH_CHANNEL}")
+        print(f"Always reply: {ALWAYS_REPLY}")
+        print(f"Reply probability: {REPLY_PROBABILITY}")
+        print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
+
+    async def event_message(self, message):
+        global last_global_reply_at
+
+        if message.chatter.id == self.bot_id:
+            return
+
+        username = message.chatter.name
+        content = message.text.strip()
+
+        log_chat_message(username, content)
+
+        if should_ignore_message(username, content):
+            return
+
+        if not should_reply(username, content):
+            return
+
+        try:
+            if LLM_REPLY_FILTER_ENABLED:
+                should_send, reason = should_reply_by_llm(username, content)
+
+                if not should_send:
+                    print(f"LLM skip @{username}: {reason or '不需回應'}")
+                    return
+
+            reply = ask_gpt(username, content)
+
+            if not reply:
+                return
+
+            await message.respond(f"@{username} {reply}")
+
+            now = time.time()
+            last_global_reply_at = now
+            last_user_reply_at[username] = now
+
+            print(f"{TWITCH_BOT_NICK}: @{username} {reply}")
+
+        except Exception as e:
+            print("GPT error:", e)
+
+
+if __name__ == "__main__":
+    validate_twitch_token_scopes()
+    bot = GPTTwitchBot()
+    bot.run(token=normalize_twitch_token(TWITCH_TOKEN))
