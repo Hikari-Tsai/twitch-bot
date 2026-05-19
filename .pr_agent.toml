@@ -1,0 +1,43 @@
+[config]
+model = "gpt-5.5-2026-04-23"
+fallback_models = ["gpt-5.4-mini"]
+response_language = "zh-TW"
+
+[github_action_config]
+auto_describe = true
+auto_review = true
+auto_improve = true
+
+[pr_description]
+generate_ai_title = true
+use_bullet_points = true
+enable_pr_type = true
+enable_semantic_files_types = true
+extra_instructions = """\
+請使用繁體中文撰寫 PR 摘要。
+摘要應著重 Twitch bot 行為變更、設定檔變更、使用者可見影響，以及是否需要更新 README 或 .env.example。
+"""
+
+[pr_reviewer]
+require_tests_review = true
+require_security_review = true
+require_todo_scan = true
+num_max_findings = 5
+extra_instructions = """\
+請使用繁體中文撰寫 review。
+此專案是 Python Twitch 聊天室 bot，review 時請特別注意：
+- Twitch token、OpenAI API key、client secret 等敏感資訊不可被記錄或提交。
+- EventSub scope、TWITCH_BOT_ID、TWITCH_OWNER_ID、TWITCH_TOKEN 所屬使用者的一致性。
+- 聊天室公開回覆的洗版風險、冷卻時間、回覆機率與忽略規則。
+- LLM 回覆內容長度、prompt injection 風險，以及是否可能回覆不該公開回覆的訊息。
+- 新增設定時，README 與 .env.example 是否同步更新。
+"""
+
+[pr_code_suggestions]
+num_code_suggestions_per_chunk = 3
+focus_only_on_problems = true
+suggestions_score_threshold = 7
+extra_instructions = """\
+請使用繁體中文撰寫 code suggestion。
+只提出可行且低風險的修正，避免純風格偏好或與本次 PR 無關的重構。
+"""
