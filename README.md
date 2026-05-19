@@ -141,19 +141,6 @@ LLM reply filter enabled: <true/false>
 9. 使用 `prompt/system_prompt.txt` 和聊天室訊息產生 GPT 回覆。
 10. 發送 `@username <reply>` 到 Twitch 聊天室。
 
-## Git 與敏感資料
-
-`.gitignore` 已忽略：
-
-```gitignore
-.env
-prompt/system_prompt.txt
-__pycache__/
-.tio.tokens.json
-```
-
-請只提交 `.env.example` 和 `prompt/system_prompt.txt.example`。如果真實 API key 或 OAuth token 曾經被提交或外流，應立即撤銷並重新產生。
-
 ## 常見問題
 
 ### `TWITCH_BOT_ID 與 TWITCH_TOKEN 使用者不一致`
