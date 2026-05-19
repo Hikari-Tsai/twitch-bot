@@ -18,9 +18,22 @@
 
 ```text
 .
-├── README.md                       # 專案說明文件
-├── main.py                         # Bot 主程式
+├── .clineignore                    # Cline 忽略規則
+├── .clinerules/                    # Cline 專案規則
+│   ├── 01-project.md               # 專案背景與安全規範
+│   ├── 02-python.md                # Python 與 bot 修改規範
+│   └── 03-docs.md                  # 文件與設定檔規範
 ├── .env.example                    # 環境變數範例
+├── .github/
+│   └── workflows/
+│       └── pr-agent.yml            # PR-Agent GitHub Actions workflow
+├── .pr_agent.toml                  # PR-Agent 設定
+├── LICENSE                         # 授權條款
+├── README.md                       # 專案說明文件
+├── assets/
+│   └── cover.png                   # README 封面圖片
+├── main.py                         # Bot 主程式
+├── requirements.txt                # Python 套件依賴
 └── prompt/
     └── system_prompt.txt.example   # System Prompt 設定提示詞
 ```
@@ -100,6 +113,46 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
 | `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
 | `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 | 自行設定，建議符合聊天室可讀性。 |
+
+## PR-Agent 設定
+
+本專案已加入 PR-Agent，用來在 GitHub pull request 中自動產生摘要、code review 與改善建議。
+
+相關檔案：
+
+- `.github/workflows/pr-agent.yml`：GitHub Actions workflow，負責在 PR 事件發生時執行 PR-Agent。
+- `.pr_agent.toml`：PR-Agent 的 repo 層級設定，包含回覆語言、模型、review 重點與 suggestion 規則。
+
+目前 workflow 會在以下事件觸發：
+
+- PR 開啟、重新開啟、轉成 ready for review。
+- 已存在的 PR branch 推入新 commit。
+- PR conversation comment 或 review comment 被建立或編輯。
+
+PR-Agent 需要 GitHub Actions secret：
+
+| Secret | 說明 |
+| --- | --- |
+| `OPENAI_API_KEY` | PR-Agent 呼叫 OpenAI model 使用的 API key。 |
+
+設定位置在 GitHub repo 的 `Settings > Secrets and variables > Actions`。
+
+`.pr_agent.toml` 目前設定 PR-Agent 使用繁體中文回覆，並特別要求 review Twitch token、OpenAI API key、公開聊天室回覆、冷卻時間、prompt injection 風險，以及 README 和 `.env.example` 是否同步更新。
+
+## Cline 專案規則
+
+本專案已加入 Cline workspace 規則，讓 Cline 在修改程式或文件時能理解這個 repo 的邊界與安全要求。
+
+相關檔案：
+
+- `.clineignore`：限制 Cline 不要讀取 `.env`、實際 system prompt、token 檔、virtual environment 與快取檔。
+- `.clinerules/01-project.md`：專案背景、核心檔案、Twitch bot 行為限制與安全規範。
+- `.clinerules/02-python.md`：Python 程式修改規範，包含 Twitch 回覆流程、OpenAI 呼叫與驗證方式。
+- `.clinerules/03-docs.md`：README、GitHub Actions、PR-Agent 設定與其他文件更新規範。
+
+使用 Cline 時，只要在 VS Code 開啟此 repo，Cline 會自動讀取 `.clinerules/` 中的規則；符合 `paths` 條件的規則會在處理對應檔案時套用。
+
+若新增敏感檔案、私有設定或本機產物，請同步檢查 `.clineignore`，避免 Cline 將不該讀取的內容納入上下文。
 
 ## Twitch 設定重點
 

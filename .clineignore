@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+
+prompt/system_prompt.txt
+.tio.tokens.json
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+.git/
+.github/workflows/*.log
+
