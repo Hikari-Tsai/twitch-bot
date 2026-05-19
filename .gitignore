@@ -3,3 +3,4 @@ prompt/system_prompt.txt
 
 __pycache__/
 .tio.tokens.json
+.gitignore

@@ -18,11 +18,11 @@
 
 ```text
 .
+├── README.md                       # 專案說明文件
 ├── main.py                         # Bot 主程式
 ├── .env.example                    # 環境變數範例
-├── .gitignore                      # 忽略本機密鑰與私人 prompt
 └── prompt/
-    └── system_prompt.txt.example   # 可提交到 Git 的 prompt 範例
+    └── system_prompt.txt.example   # System Prompt 設定提示詞
 ```
 
 ## 必要條件
