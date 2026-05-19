@@ -41,13 +41,7 @@
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install python-dotenv openai twitchio
-```
-
-如果之後要固定版本，建議新增 `requirements.txt`：
-
-```bash
-pip freeze > requirements.txt
+pip install -r requirements.txt
 ```
 
 ## 初始化設定
@@ -65,36 +59,46 @@ cp prompt/system_prompt.txt.example prompt/system_prompt.txt
 
 ### OpenAI
 
-| 變數 | 說明 |
-| --- | --- |
-| `OPENAI_API_KEY` | OpenAI API key。 |
-| `OPENAI_MODEL` | 主要回覆模型，例如 `gpt-4.1-mini` 或其他可用 Responses API 的模型。 |
-| `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 |
-| `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 |
-| `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 |
+| 變數 | 說明 | 取得方式 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | OpenAI API key。 | 到 [OpenAI Platform API keys](https://platform.openai.com/api-keys) 建立 key。 |
+| `OPENAI_MODEL` | 主要回覆模型，例如 `gpt-4.1-mini` 或其他可用 Responses API 的模型。 | 到 [OpenAI Models](https://platform.openai.com/docs/models) 查可用 model id，或用 Models API 列出帳號可用模型。 |
+| `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 | 自行決定；想省 token 或降低延遲可設 `false`。 |
+| `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
+| `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 
 ### Twitch
 
-| 變數 | 說明 |
-| --- | --- |
-| `TWITCH_TOKEN` | Bot 帳號的 OAuth token，可包含或不包含 `oauth:` 前綴。 |
-| `TWITCH_CLIENT_ID` | Twitch Developer Console 應用程式的 Client ID。 |
-| `TWITCH_CLIENT_SECRET` | 目前程式可讀取但不是 token 登入的主要必填項；若未使用 client secret flow 可留空或註解。 |
-| `TWITCH_BOT_ID` | Bot 帳號的 Twitch user ID，必須與 `TWITCH_TOKEN` 所屬帳號一致。 |
-| `TWITCH_OWNER_ID` | 要監聽的頻道擁有者 Twitch user ID。這個值實際決定 EventSub 監聽哪個頻道。 |
-| `TWITCH_CHANNEL` | 頻道名稱，目前主要用於 log 顯示。 |
-| `TWITCH_BOT_NICK` | Bot 暱稱，目前主要用於 console log 顯示；Twitch 實際發話帳號由 `TWITCH_TOKEN` 決定。 |
+| 變數 | 說明 | 取得方式 |
+| --- | --- | --- |
+| `TWITCH_TOKEN` | Bot 帳號的 OAuth user access token，可包含或不包含 `oauth:` 前綴。 | 建議用 Twitch CLI：`twitch token --user-token --scopes "user:read:chat user:write:chat"`。Twitch chat EventSub 讀取訊息需要 `user:read:chat`，發送聊天訊息需要 `user:write:chat`。 |
+| `TWITCH_CLIENT_ID` | Twitch Developer Console 應用程式的 Client ID。 | 到 [Twitch Developer Console](https://dev.twitch.tv/console/apps) 建立或選擇 app，複製 Client ID。 |
+| `TWITCH_CLIENT_SECRET` | 目前程式可讀取但不是 token 登入的主要必填項；若未使用 client secret flow 可留空或註解。 | 在 Twitch Developer Console 的 app 頁面產生。不要提交到 Git。 |
+| `TWITCH_BOT_ID` | Bot 帳號的 Twitch user ID，必須與 `TWITCH_TOKEN` 所屬帳號一致。 | 用 Twitch Helix Get Users 查 bot 帳號 login，回傳的 `id` 即 user ID。 |
+| `TWITCH_OWNER_ID` | 要監聽的頻道擁有者 Twitch user ID。這個值實際決定 EventSub 監聽哪個頻道。 | 用 Twitch Helix Get Users 查目標頻道 login，回傳的 `id` 即 user ID。 |
+| `TWITCH_CHANNEL` | 頻道登入名稱，目前主要用於 log 顯示。 | Twitch 頻道網址最後一段，例如 `https://www.twitch.tv/topa_1120` 的 login 是 `topa_1120`。 |
+| `TWITCH_BOT_NICK` | Bot 暱稱，目前主要用於 console log 顯示；Twitch 實際發話帳號由 `TWITCH_TOKEN` 決定。 | 自行設定，建議填容易辨識的 bot 顯示名稱。 |
+
+查 Twitch user ID 可以使用 Helix Get Users API：
+
+```bash
+curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
+  -H "Authorization: Bearer <TWITCH_TOKEN_WITHOUT_OAUTH_PREFIX>" \
+  "https://api.twitch.tv/helix/users?login=<twitch_login>"
+```
+
+回傳 JSON 中的 `data[0].id` 就是 `TWITCH_BOT_ID` 或 `TWITCH_OWNER_ID` 要填的值。
 
 ### 回覆策略
 
-| 變數 | 說明 |
-| --- | --- |
-| `ALWAYS_REPLY` | `true` 時通過忽略規則與冷卻後都會回覆。 |
-| `REPLY_PROBABILITY` | `ALWAYS_REPLY=false` 時的隨機回覆機率，例如 `0.25`。 |
-| `GLOBAL_COOLDOWN_SECONDS` | Bot 兩次公開回覆之間的全域冷卻秒數。 |
-| `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 |
-| `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 |
-| `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 |
+| 變數 | 說明 | 取得方式 |
+| --- | --- | --- |
+| `ALWAYS_REPLY` | `true` 時通過忽略規則與冷卻後都會回覆。 | 自行決定。正式直播建議先用 `false` 或拉高冷卻時間。 |
+| `REPLY_PROBABILITY` | `ALWAYS_REPLY=false` 時的隨機回覆機率，例如 `0.25`。 | 自行設定，範圍建議 `0.0` 到 `1.0`。 |
+| `GLOBAL_COOLDOWN_SECONDS` | Bot 兩次公開回覆之間的全域冷卻秒數。 | 自行設定，正式直播建議不要太低。 |
+| `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
+| `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
+| `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 | 自行設定，建議符合聊天室可讀性。 |
 
 ## Twitch 設定重點
 
