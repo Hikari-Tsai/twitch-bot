@@ -1,5 +1,7 @@
 # Twitch GPT Chat Bot
 
+![Twitch GPT Chat Bot cover](assets/cover.png)
+
 這是一個使用 TwitchIO EventSub 監聽 Twitch 聊天室，並透過 OpenAI Responses API 產生簡短回覆的直播聊天室機器人。
 
 ## 功能
