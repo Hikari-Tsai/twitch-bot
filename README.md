@@ -12,6 +12,7 @@
 - 支援全域與單一使用者冷卻時間，避免洗版。
 - 可忽略指令、網址、過長訊息與黑名單使用者。
 - 可用 LLM 做二次判斷，決定訊息是否值得公開回覆。
+- 預設忽略台主訊息；只有台主使用 `@帕寶` 強制觸發時才回覆，並優先執行台主交辦的聊天室任務。
 - 啟動時會驗證 Twitch token scope，以及 token 使用者是否符合 `TWITCH_BOT_ID`。
 
 ## 專案結構
@@ -134,13 +135,14 @@ LLM reply filter enabled: <true/false>
 1. 收到 Twitch 聊天室訊息。
 2. 如果訊息來自 bot 自己，直接忽略。
 3. 記錄聊天室訊息到 console。
-4. 忽略空訊息、黑名單、過長訊息、指令和網址。
-5. 檢查全域與使用者冷卻時間。
-6. 若訊息包含強制觸發詞，直接進入回覆流程。
-7. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
-8. 若啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-9. 使用 `prompt/system_prompt.txt` 和聊天室訊息產生 GPT 回覆。
-10. 發送 `@username <reply>` 到 Twitch 聊天室。
+4. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `@帕寶` 時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
+5. 忽略空訊息、黑名單、過長訊息、指令和網址。
+6. 檢查全域與使用者冷卻時間。
+7. 若一般觀眾訊息包含強制觸發詞，直接進入回覆流程。
+8. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
+9. 若啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
+10. 使用 `prompt/system_prompt.txt` 和聊天室訊息產生 GPT 回覆。
+11. 發送 `@username <reply>` 到 Twitch 聊天室。
 
 ## 常見問題
 

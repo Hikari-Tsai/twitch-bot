@@ -76,6 +76,8 @@ FORCE_TRIGGERS = (
     "@帕寶",
 )
 
+OWNER_FORCE_TRIGGER = "@帕寶"
+
 
 def require_env(name: str, value: str | None) -> str:
     if not value:
@@ -136,6 +138,14 @@ def validate_twitch_token_scopes() -> None:
 def has_force_trigger(message: str) -> bool:
     lowered = message.lower()
     return any(trigger.lower() in lowered for trigger in FORCE_TRIGGERS)
+
+
+def is_channel_owner(chatter_id: str | int | None) -> bool:
+    return bool(TWITCH_OWNER_ID and str(chatter_id) == TWITCH_OWNER_ID)
+
+
+def has_owner_force_trigger(message: str) -> bool:
+    return OWNER_FORCE_TRIGGER.lower() in message.lower()
 
 
 def load_system_prompt() -> str:
@@ -242,8 +252,19 @@ def log_chat_message(username: str, message: str) -> None:
     print(f"[{timestamp}] chat #{channel} {username}: {message}", flush=True)
 
 
-def ask_gpt(username: str, message: str) -> str:
+def ask_gpt(username: str, message: str, *, is_owner_command: bool = False) -> str:
     system_prompt = load_system_prompt()
+    user_prompt = (
+        f"聊天室觀眾 {username} 說：{message}\n\n"
+        "請用適合直播聊天室的方式簡短回應。"
+    )
+
+    if is_owner_command:
+        user_prompt = (
+            f"聊天室台主 {username} 使用 {OWNER_FORCE_TRIGGER} 強制觸發：{message}\n\n"
+            "這是台主交辦的直播聊天室任務。請優先遵守台主要求並直接執行，"
+            "用適合直播聊天室公開顯示的方式簡短回應。"
+        )
 
     response = openai_client.responses.create(
         model=OPENAI_MODEL,
@@ -254,10 +275,7 @@ def ask_gpt(username: str, message: str) -> str:
             },
             {
                 "role": "user",
-                "content": (
-                    f"聊天室觀眾 {username} 說：{message}\n\n"
-                    "請用適合直播聊天室的方式簡短回應。"
-                ),
+                "content": user_prompt,
             },
         ],
     )
@@ -291,24 +309,59 @@ class GPTTwitchBot(commands.Bot):
         print(f"Reply probability: {REPLY_PROBABILITY}")
         print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
 
-    async def event_message(self, message):
+    async def send_gpt_reply(
+        self,
+        message,
+        username: str,
+        content: str,
+        *,
+        is_owner_command: bool = False,
+    ) -> None:
         global last_global_reply_at
 
+        reply = ask_gpt(username, content, is_owner_command=is_owner_command)
+
+        if not reply:
+            return
+
+        await message.respond(f"@{username} {reply}")
+
+        now = time.time()
+        last_global_reply_at = now
+        last_user_reply_at[username] = now
+
+        print(f"{TWITCH_BOT_NICK}: @{username} {reply}")
+
+    async def event_message(self, message):
         if message.chatter.id == self.bot_id:
             return
 
         username = message.chatter.name
         content = message.text.strip()
+        is_owner = is_channel_owner(message.chatter.id)
+        is_owner_command = is_owner and has_owner_force_trigger(content)
 
         log_chat_message(username, content)
 
-        if should_ignore_message(username, content):
-            return
-
-        if not should_reply(username, content):
+        if is_owner and not is_owner_command:
             return
 
         try:
+            if is_owner_command:
+                await self.send_gpt_reply(
+                    message,
+                    username,
+                    content,
+                    is_owner_command=True,
+                )
+                return
+
+            if should_ignore_message(username, content):
+                return
+
+            if not should_reply(username, content):
+                return
+
             if LLM_REPLY_FILTER_ENABLED:
                 should_send, reason = should_reply_by_llm(username, content)
 
@@ -316,18 +369,7 @@ class GPTTwitchBot(commands.Bot):
                     print(f"LLM skip @{username}: {reason or '不需回應'}")
                     return
 
-            reply = ask_gpt(username, content)
-
-            if not reply:
-                return
-
-            await message.respond(f"@{username} {reply}")
-
-            now = time.time()
-            last_global_reply_at = now
-            last_user_reply_at[username] = now
-
-            print(f"{TWITCH_BOT_NICK}: @{username} {reply}")
+            await self.send_gpt_reply(message, username, content)
 
         except Exception as e:
             print("GPT error:", e)
