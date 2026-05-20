@@ -54,4 +54,11 @@ jobs:
           PR_URL: ${{ steps.create_pr.outputs.pr_url }}
         run: |
           python -m pip install --upgrade pip pr-agent
-          python -m pr_agent.cli --pr_url="$PR_URL" review
+          /usr/bin/env \
+            "GITHUB.USER_TOKEN=$GITHUB_TOKEN" \
+            "OPENAI.KEY=$OPENAI_KEY" \
+            python -m pr_agent.cli --pr_url="$PR_URL" review
+          /usr/bin/env \
+            "GITHUB.USER_TOKEN=$GITHUB_TOKEN" \
+            "OPENAI.KEY=$OPENAI_KEY" \
+            python -m pr_agent.cli --pr_url="$PR_URL" improve
