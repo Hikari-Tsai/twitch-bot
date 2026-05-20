@@ -27,6 +27,7 @@
 ├── .env.example                    # 環境變數範例
 ├── .github/
 │   └── workflows/
+│       ├── create-pull-request.yml # Push 分支後自動建立 PR
 │       └── pr-agent.yml            # PR-Agent GitHub Actions workflow
 ├── .pr_agent.toml                  # PR-Agent 設定
 ├── LICENSE                         # 授權條款
