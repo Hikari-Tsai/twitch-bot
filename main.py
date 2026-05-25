@@ -367,10 +367,12 @@ class GPTTwitchBot(commands.Bot):
             if should_ignore_message(username, content):
                 return
 
+            force_triggered = has_force_trigger(content)
+
             if not should_reply(username, content):
                 return
 
-            if LLM_REPLY_FILTER_ENABLED:
+            if LLM_REPLY_FILTER_ENABLED and not force_triggered: #如果有用@小助手等強制觸發詞，就不經過LLM判斷，直接回覆
                 should_send, reason = should_reply_by_llm(username, content)
 
                 if not should_send:

@@ -111,8 +111,8 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | --- | --- | --- |
 | `ALWAYS_REPLY` | `true` 時通過忽略規則與冷卻後都會回覆。 | 自行決定。正式直播建議先用 `false` 或拉高冷卻時間。 |
 | `REPLY_PROBABILITY` | `ALWAYS_REPLY=false` 時的隨機回覆機率，例如 `0.25`。 | 自行設定，範圍建議 `0.0` 到 `1.0`。 |
-| `FORCE_TRIGGERS` | 一般觀眾強制觸發詞，多個詞用半形逗號分隔，例如 `小助手,bot,@小助手,帕寶,@帕寶`。 | 自行設定。訊息包含任一詞時會略過隨機回覆機率，但仍會檢查冷卻與 LLM 回覆判斷器。 |
-| `OWNER_FORCE_TRIGGER` | 台主強制觸發詞，例如 `@帕寶`。 | 自行設定。`TWITCH_OWNER_ID` 的訊息預設忽略，只有包含此詞時才會強制回覆。 |
+| `FORCE_TRIGGERS` | 一般觀眾強制觸發詞，多個詞用半形逗號分隔，例如 `小助手,bot,@小助手`。 | 自行設定。訊息包含任一詞時，通過忽略規則與冷卻後必定回覆，並略過隨機回覆機率與 LLM 回覆判斷器。 |
+| `OWNER_FORCE_TRIGGER` | 台主強制觸發詞，例如 `@小幫手`。 | 自行設定。`TWITCH_OWNER_ID` 的訊息預設忽略，只有包含此詞時才會強制回覆。 |
 | `GLOBAL_COOLDOWN_SECONDS` | Bot 兩次公開回覆之間的全域冷卻秒數。 | 自行設定，正式直播建議不要太低。 |
 | `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
 | `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
@@ -194,9 +194,9 @@ LLM reply filter enabled: <true/false>
 4. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGER` 時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
 5. 忽略空訊息、黑名單、過長訊息、指令和網址。
 6. 檢查全域與使用者冷卻時間。
-7. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程。
+7. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
 8. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
-9. 若啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
+9. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
 10. 使用 `prompt/system_prompt.txt` 和聊天室訊息產生 GPT 回覆。
 11. 發送 `@username <reply>` 到 Twitch 聊天室。
 
