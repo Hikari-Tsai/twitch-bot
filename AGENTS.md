@@ -1,71 +1,67 @@
-# Codex Review Guide
+# Codex 審查指南
 
-This repository is a Python Twitch chat bot that listens to Twitch EventSub chat
-messages and uses the OpenAI Responses API to generate short public replies.
+這個 repository 是 Python Twitch 聊天室機器人，會監聽 Twitch EventSub 聊天訊息，並使用 OpenAI Responses API 產生簡短的公開回覆。
 
-Use this guide when reviewing changes in this repo.
+審查這個 repo 的變更時，請使用這份指南。
 
-## Review Language
+## 審查語言
 
-- Write review comments in Traditional Chinese.
-- Lead with concrete risks, bugs, regressions, missing tests, or security issues.
-- Avoid style-only suggestions unless they affect correctness, maintainability, or user safety.
+- 請使用繁體中文撰寫 review comment。
+- 優先指出具體風險、bug、行為退化、缺少測試或安全性問題。
+- 除非會影響正確性、可維護性或使用者安全，否則避免只針對風格提出建議。
 
-## High-Risk Areas
+## 高風險區域
 
-- Secrets must never be committed, logged, printed, or included in examples:
+- Secret 絕不能被提交、記錄到 log、印出，或寫進範例：
   - `OPENAI_API_KEY`
   - `TWITCH_TOKEN`
   - `TWITCH_CLIENT_SECRET`
   - `.env`
   - `prompt/system_prompt.txt`
-  - local token/cache files
-- Twitch auth changes must preserve the relationship between:
+  - 本機 token/cache 檔案
+- Twitch 驗證相關變更必須保留以下項目的關係：
   - `TWITCH_TOKEN`
   - `TWITCH_BOT_ID`
   - `TWITCH_OWNER_ID`
-  - required scopes `user:read:chat` and `user:write:chat`
-- Public chat replies must avoid spam:
-  - keep global and per-user cooldown behavior intact
-  - preserve ignore rules for commands, URLs, long messages, and blacklist users
-  - keep reply probability and force-trigger behavior understandable
-- LLM output must remain bounded:
-  - preserve `MAX_INPUT_LENGTH` and `MAX_REPLY_LENGTH`
-  - avoid changes that make prompt injection easier
-  - avoid exposing private prompt or environment data in replies
+  - 必要 scopes：`user:read:chat` 和 `user:write:chat`
+- 公開聊天室回覆必須避免洗版：
+  - 保持全域冷卻與單一使用者冷卻行為正確
+  - 保留指令、網址、過長訊息與黑名單使用者的忽略規則
+  - 讓回覆機率與強制觸發行為保持容易理解
+- LLM 輸出必須受到限制：
+  - 保留 `MAX_INPUT_LENGTH` 和 `MAX_REPLY_LENGTH`
+  - 避免讓 prompt injection 更容易成功的變更
+  - 避免在回覆中暴露私有 prompt 或環境資料
 
-## Python Review Checklist
+## Python 審查清單
 
-- Confirm new environment variables are documented in both `.env.example` and
-  `README.md`.
-- Check that numeric environment variables fail clearly or have safe defaults.
-- Check network calls for timeouts and useful errors.
-- Check that Twitch EventSub handlers do not block unnecessarily.
-- Check that user-visible reply behavior is deterministic enough to debug.
-- Prefer small, local fixes over broad rewrites.
+- 確認新的環境變數同時記錄在 `.env.example` 和 `README.md`。
+- 檢查數值型環境變數是否有清楚的失敗訊息或安全預設值。
+- 檢查網路呼叫是否設定 timeout，且錯誤訊息是否有助於排查。
+- 檢查 Twitch EventSub handler 是否沒有不必要地阻塞。
+- 檢查使用者可見的回覆行為是否足夠可預測，方便除錯。
+- 優先提出小範圍、局部修正，避免大規模重寫。
 
-## GitHub Actions Review Checklist
+## GitHub Actions 審查清單
 
-- Confirm workflow permissions are no broader than needed.
-- Prefer pinned action versions or stable tags over moving branches when possible.
-- Do not expose secrets through logs, PR comments, command output, or debug flags.
-- Ensure PR automation does not create duplicate pull requests or recursive workflow
-  behavior.
+- 確認 workflow 權限沒有超過實際需要。
+- 可行時，優先使用固定 action 版本或穩定 tag，避免使用會移動的分支。
+- 不要透過 log、PR comment、命令輸出或 debug flag 暴露 secrets。
+- 確認 PR 自動化不會建立重複 pull request，也不會造成 workflow 遞迴觸發。
 
-## Documentation Expectations
+## 文件期望
 
-- If behavior changes, update `README.md`.
-- If configuration changes, update `.env.example`.
-- If prompt setup changes, update `prompt/system_prompt.txt.example`.
-- Do not document real secrets or local-only values.
+- 如果行為有變更，請更新 `README.md`。
+- 如果設定有變更，請更新 `.env.example`。
+- 如果 prompt 設定方式有變更，請更新 `prompt/system_prompt.txt.example`。
+- 不要記錄真實 secrets 或只存在本機的值。
 
-## Local Verification
+## 本機驗證
 
-When practical, run the narrowest relevant checks:
+可行時，執行範圍最小且相關的檢查：
 
 ```bash
 python -m py_compile main.py
 ```
 
-If dependencies are installed and the change affects runtime behavior, prefer a
-focused manual check over broad speculative changes.
+如果已安裝 dependencies，且變更會影響執行期行為，請優先做聚焦的手動檢查，避免提出範圍過大的推測性變更。
