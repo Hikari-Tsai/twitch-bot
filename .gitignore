@@ -1,5 +1,6 @@
 .env
 prompt/system_prompt.txt
+prompt/owner_command_prompt.txt
 
 __pycache__/
 .tio.tokens.json
