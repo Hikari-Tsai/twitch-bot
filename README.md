@@ -131,6 +131,17 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 | 自行設定，建議符合聊天室可讀性。 |
 | `CONVERSATION_HISTORY_MAX_TURNS` | 同一觀眾保留最近幾輪「觀眾訊息 + bot 回覆」作為短期上下文。 | 預設 `4`。設為 `0` 可停用；此記憶只存在於程式執行期間，重啟後會清空。 |
 
+### 上下文與 Prompt Injection 風險
+
+啟用 `CONVERSATION_HISTORY_MAX_TURNS` 後，同一觀眾先前的訊息會在後續回覆時再次送進模型，因此 prompt injection 風險會增加。例如觀眾可能先要求 bot 忽略原本指令、洩漏 system prompt 或輸出內部設定，並嘗試讓這些內容污染後續上下文。
+
+目前程式會在送出上下文前加入說明，要求模型只把歷史訊息當作連續對話參考，不要視為系統指令，也不要暴露上下文內容。不過這不是完整防護；實務上仍建議：
+
+- 不要在 `prompt/system_prompt.txt`、`prompt/owner_command_prompt.txt` 或任何會送進模型的 prompt 中放入 API key、Twitch token、client secret 或私人資料。
+- 將 `CONVERSATION_HISTORY_MAX_TURNS` 保持在較小值，例如 `2` 到 `4`；若不需要連續對話，可設為 `0` 停用。
+- 保留 `MAX_INPUT_LENGTH` 與 `MAX_REPLY_LENGTH`，降低惡意輸入長度與可能外洩的輸出量。
+- 若之後要加強防護，可在寫入上下文前過濾可疑訊息，例如包含 `ignore previous instructions`、`system prompt`、`developer message`、`reveal prompt`、`忽略前面的指令`、`顯示你的 prompt` 等內容時，只回覆但不存入上下文。
+
 ## PR-Agent 設定
 
 本專案已加入 PR-Agent，用來在 GitHub pull request 中自動產生摘要、code review 與改善建議。
@@ -254,3 +265,7 @@ cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
 ### Bot 沒有在預期頻道回覆
 
 請優先檢查 `TWITCH_OWNER_ID`。目前程式實際監聽頻道是由 `TWITCH_OWNER_ID` 決定，不是 `TWITCH_CHANNEL`。
+
+## 授權
+
+本專案採用 MIT License，詳見 [LICENSE](LICENSE)。
