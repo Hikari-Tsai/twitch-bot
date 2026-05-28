@@ -30,6 +30,7 @@
 │       ├── create-pull-request.yml # Push 分支後自動建立 PR
 │       └── pr-agent.yml            # PR-Agent GitHub Actions workflow
 ├── .pr_agent.toml                  # PR-Agent 設定
+├── AGENTS.md                       # Codex 審查指南
 ├── LICENSE                         # 授權條款
 ├── README.md                       # 專案說明文件
 ├── assets/
@@ -37,6 +38,7 @@
 ├── main.py                         # Bot 主程式
 ├── requirements.txt                # Python 套件依賴
 └── prompt/
+    ├── owner_command_prompt.txt.example # 台主強制觸發追加 Prompt 範例
     └── system_prompt.txt.example   # System Prompt 設定提示詞
 ```
 
@@ -67,9 +69,12 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 cp prompt/system_prompt.txt.example prompt/system_prompt.txt
+cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
 ```
 
 接著編輯 `.env`，填入實際密鑰與 Twitch 帳號資訊。
+prompt/system_prompt.txt需要填寫主播的人格設定
+prompt/owner_command_prompt.txt
 
 ## 環境變數
 
@@ -82,6 +87,13 @@ cp prompt/system_prompt.txt.example prompt/system_prompt.txt
 | `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 | 自行決定；想省 token 或降低延遲可設 `false`。 |
 | `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
+| `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
+
+`OWNER_COMMAND_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
+
+- `{username}`：台主的 Twitch 顯示名稱。
+- `{owner_force_trigger}`：台主強制觸發詞，例如 `@小幫手`。
+- `{message}`：台主送出的完整聊天室訊息。
 
 ### Twitch
 
@@ -117,6 +129,7 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
 | `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
 | `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 | 自行設定，建議符合聊天室可讀性。 |
+| `CONVERSATION_HISTORY_MAX_TURNS` | 同一觀眾保留最近幾輪「觀眾訊息 + bot 回覆」作為短期上下文。 | 預設 `4`。設為 `0` 可停用；此記憶只存在於程式執行期間，重啟後會清空。 |
 
 ## PR-Agent 設定
 
@@ -142,6 +155,14 @@ PR-Agent 需要 GitHub Actions secret：
 設定位置在 GitHub repo 的 `Settings > Secrets and variables > Actions`。
 
 `.pr_agent.toml` 目前設定 PR-Agent 使用繁體中文回覆，並特別要求 review Twitch token、OpenAI API key、公開聊天室回覆、冷卻時間、prompt injection 風險，以及 README 和 `.env.example` 是否同步更新。
+
+## Codex 審查指南
+
+本專案已加入 `AGENTS.md`，用來提供 Codex 在 GitHub pull request review 或本機協作時的 repo 層級指引。
+
+`AGENTS.md` 目前要求 Codex 使用繁體中文審查，並優先關注 secrets、Twitch token、OpenAI API key、公開聊天室回覆、冷卻時間、prompt injection 風險，以及文件是否同步更新。
+
+請注意，`AGENTS.md` 是 Codex 使用的指引檔；目前 `.github/workflows/pr-agent.yml` 使用的是 `the-pr-agent/pr-agent`，主要讀取 `.pr_agent.toml`，不會因為新增 `AGENTS.md` 就自動套用相同規則。若要調整 PR-Agent 的行為，請修改 `.pr_agent.toml`。
 
 ## Cline 專案規則
 
@@ -170,7 +191,7 @@ PR-Agent 需要 GitHub Actions secret：
 
 ## 執行
 
-確認 `.env` 和 `prompt/system_prompt.txt` 都已建立後：
+確認 `.env`、`prompt/system_prompt.txt` 和 `prompt/owner_command_prompt.txt` 都已建立後：
 
 ```bash
 python main.py
@@ -197,8 +218,9 @@ LLM reply filter enabled: <true/false>
 7. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
 8. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
 9. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-10. 使用 `prompt/system_prompt.txt` 和聊天室訊息產生 GPT 回覆。
+10. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
 11. 發送 `@username <reply>` 到 Twitch 聊天室。
+12. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
 
 ## 常見問題
 
@@ -221,6 +243,12 @@ user:write:chat
 
 ```bash
 cp prompt/system_prompt.txt.example prompt/system_prompt.txt
+```
+
+若要自訂台主強制觸發時的追加 prompt，請建立 `prompt/owner_command_prompt.txt`：
+
+```bash
+cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
 ```
 
 ### Bot 沒有在預期頻道回覆
