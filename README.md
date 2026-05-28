@@ -73,6 +73,8 @@ cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
 ```
 
 接著編輯 `.env`，填入實際密鑰與 Twitch 帳號資訊。
+prompt/system_prompt.txt需要填寫主播的人格設定
+prompt/owner_command_prompt.txt
 
 ## 環境變數
 
@@ -86,6 +88,12 @@ cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
 | `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 | `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
+
+`OWNER_COMMAND_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
+
+- `{username}`：台主的 Twitch 顯示名稱。
+- `{owner_force_trigger}`：台主強制觸發詞，例如 `@小幫手`。
+- `{message}`：台主送出的完整聊天室訊息。
 
 ### Twitch
 

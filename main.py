@@ -2,12 +2,15 @@ import os
 import json
 import time
 import random
+import socket
+import http.client
+import urllib.error
 import urllib.request
 from collections import defaultdict, deque
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from twitchio import eventsub
 from twitchio.ext import commands
 
@@ -59,7 +62,7 @@ OWNER_COMMAND_PROMPT_PATH = Path(
     os.getenv("OWNER_COMMAND_PROMPT_PATH", "prompt/owner_command_prompt.txt")
 )
 DEFAULT_OWNER_COMMAND_PROMPT = (
-    "這是台主交辦的直播聊天室任務。請優先遵守台主要求並直接執行，"
+    "這是台主 {username} 交辦的直播聊天室任務。請優先遵守台主要求並直接執行，"
     "用適合直播聊天室公開顯示的方式簡短回應。"
 )
 
@@ -121,6 +124,56 @@ def normalize_twitch_token(token: str | None) -> str | None:
     return token
 
 
+def iter_exception_chain(error: BaseException):
+    current = error
+    seen = set()
+
+    while current and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def is_network_error(error: BaseException) -> bool:
+    network_error_types = (
+        APIConnectionError,
+        APITimeoutError,
+        ConnectionError,
+        TimeoutError,
+        socket.timeout,
+        urllib.error.URLError,
+        http.client.HTTPException,
+    )
+
+    for chained_error in iter_exception_chain(error):
+        if isinstance(chained_error, network_error_types):
+            return True
+
+        error_name = type(chained_error).__name__.lower()
+        if (
+            "timeout" in error_name
+            or "connection" in error_name
+            or "connector" in error_name
+            or "disconnect" in error_name
+            or "websocket" in error_name
+        ):
+            return True
+
+    return False
+
+
+def is_temporary_api_status_error(error: BaseException) -> bool:
+    for chained_error in iter_exception_chain(error):
+        if isinstance(chained_error, APIStatusError):
+            return chained_error.status_code in {408, 429, 500, 502, 503, 504}
+
+    return False
+
+
+def print_network_error(context: str, error: BaseException) -> None:
+    print(f"[network] {context}: {type(error).__name__}: {error}", flush=True)
+
+
 def validate_twitch_token_scopes() -> None:
     token = normalize_twitch_token(TWITCH_TOKEN)
     if not token:
@@ -131,8 +184,13 @@ def validate_twitch_token_scopes() -> None:
         headers={"Authorization": f"OAuth {token}"},
     )
 
-    with urllib.request.urlopen(request, timeout=15) as response:
-        token_data = json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            token_data = json.load(response)
+    except Exception as e:
+        if is_network_error(e):
+            print_network_error("驗證 Twitch token scope 失敗，可能是網路不穩或 Twitch 連線中斷", e)
+        raise
 
     scopes = set(token_data.get("scopes") or [])
     required_scopes = {"user:read:chat", "user:write:chat"}
@@ -174,12 +232,37 @@ def load_system_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
-def load_owner_command_prompt() -> str:
-    if not OWNER_COMMAND_PROMPT_PATH.exists():
-        return DEFAULT_OWNER_COMMAND_PROMPT
+class PromptVariables(dict):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
-    prompt = OWNER_COMMAND_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    return prompt or DEFAULT_OWNER_COMMAND_PROMPT
+
+def render_prompt_template(template: str, **variables: str) -> str:
+    try:
+        return template.format_map(PromptVariables(variables))
+    except ValueError as e:
+        print(f"Prompt template format error: {e}")
+        return template
+
+
+def load_owner_command_prompt(
+    *,
+    username: str,
+    owner_force_trigger: str,
+    message: str,
+) -> str:
+    if not OWNER_COMMAND_PROMPT_PATH.exists():
+        prompt = DEFAULT_OWNER_COMMAND_PROMPT
+    else:
+        prompt = OWNER_COMMAND_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        prompt = prompt or DEFAULT_OWNER_COMMAND_PROMPT
+
+    return render_prompt_template(
+        prompt,
+        username=username,
+        owner_force_trigger=owner_force_trigger,
+        message=message,
+    )
 
 
 def should_ignore_message(username: str, message: str) -> bool:
@@ -227,25 +310,32 @@ def should_reply(user_key: str, message: str) -> bool:
 
 
 def should_reply_by_llm(username: str, message: str) -> tuple[bool, str]:
-    response = openai_client.responses.create(
-        model=LLM_REPLY_FILTER_MODEL,
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "你是 Twitch 聊天室機器人的回覆判斷器。"
-                    "請判斷這則訊息是否值得讓機器人在聊天室公開回覆。"
-                    "只有在觀眾明確詢問、呼叫機器人、需要簡短互動、或內容適合延續直播氣氛時才回覆。"
-                    "閒聊碎片、單純打招呼、無上下文短句、洗版、表情符號、網址、指令、或不需要 bot 介入的訊息不要回覆。"
-                    "只輸出 JSON，格式為：{\"should_reply\": true/false, \"reason\": \"簡短原因\"}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"聊天室觀眾 {username} 說：{message}",
-            },
-        ],
-    )
+    try:
+        response = openai_client.responses.create(
+            model=LLM_REPLY_FILTER_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 Twitch 聊天室機器人的回覆判斷器。"
+                        "請判斷這則訊息是否值得讓機器人在聊天室公開回覆。"
+                        "只有在觀眾明確詢問、呼叫機器人、需要簡短互動、或內容適合延續直播氣氛時才回覆。"
+                        "閒聊碎片、單純打招呼、無上下文短句、洗版、表情符號、網址、指令、或不需要 bot 介入的訊息不要回覆。"
+                        "只輸出 JSON，格式為：{\"should_reply\": true/false, \"reason\": \"簡短原因\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"聊天室觀眾 {username} 說：{message}",
+                },
+            ],
+        )
+    except Exception as e:
+        if is_network_error(e) or is_temporary_api_status_error(e):
+            print_network_error("OpenAI 回覆判斷器呼叫失敗，略過本次回覆", e)
+            return False, "OpenAI 連線暫時失敗"
+
+        raise
 
     try:
         result = json.loads(response.output_text)
@@ -353,16 +443,27 @@ def ask_gpt(
     )
 
     if is_owner_command:
-        owner_command_prompt = load_owner_command_prompt()
+        owner_command_prompt = load_owner_command_prompt(
+            username=username,
+            owner_force_trigger=OWNER_FORCE_TRIGGER,
+            message=message,
+        )
         user_prompt = (
             f"聊天室台主 {username} 使用 {OWNER_FORCE_TRIGGER} 強制觸發：{message}\n\n"
             f"{owner_command_prompt}"
         )
 
-    response = openai_client.responses.create(
-        model=OPENAI_MODEL,
-        input=build_conversation_input(system_prompt, viewer_history_key, user_prompt),
-    )
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=build_conversation_input(system_prompt, viewer_history_key, user_prompt),
+        )
+    except Exception as e:
+        if is_network_error(e) or is_temporary_api_status_error(e):
+            print_network_error("OpenAI 回覆產生失敗，略過本次聊天室回覆", e)
+            return "", user_prompt
+
+        raise
 
     return trim_reply(response.output_text), user_prompt
 
@@ -414,7 +515,15 @@ class GPTTwitchBot(commands.Bot):
         if not reply:
             return
 
-        await message.respond(f"@{username} {reply}")
+        try:
+            await message.respond(f"@{username} {reply}")
+        except Exception as e:
+            if is_network_error(e):
+                print_network_error("Twitch 聊天室回覆送出失敗", e)
+                return
+
+            raise
+
         remember_conversation_turn(user_key, user_prompt, reply)
 
         now = time.time()
@@ -468,10 +577,21 @@ class GPTTwitchBot(commands.Bot):
             await self.send_gpt_reply(message, username, user_key, content)
 
         except Exception as e:
+            if is_network_error(e) or is_temporary_api_status_error(e):
+                print_network_error("處理聊天室訊息時發生連線錯誤", e)
+                return
+
             print("GPT error:", e)
 
 
 if __name__ == "__main__":
-    validate_twitch_token_scopes()
-    bot = GPTTwitchBot()
-    bot.run(token=normalize_twitch_token(TWITCH_TOKEN))
+    try:
+        validate_twitch_token_scopes()
+        bot = GPTTwitchBot()
+        bot.run(token=normalize_twitch_token(TWITCH_TOKEN))
+    except Exception as e:
+        if is_network_error(e) or is_temporary_api_status_error(e):
+            print_network_error("Bot 連線中斷或啟動時連線失敗", e)
+            raise
+
+        raise
