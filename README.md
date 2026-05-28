@@ -4,6 +4,10 @@
 
 這是一個使用 TwitchIO EventSub 監聽 Twitch 聊天室，並透過 OpenAI Responses API 產生簡短回覆的直播聊天室機器人。
 
+## DEMO畫面
+![Demo](assets/demo.png)
+實際使用畫面，可設定每句都回覆或是僅需要回覆時才回覆，可@強制觸發，具備冷卻時間與觀眾上下文記憶
+
 ## 功能
 
 - 監聽指定 Twitch 頻道的聊天室訊息。
