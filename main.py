@@ -423,6 +423,15 @@ def remember_conversation_turn(viewer_history_key: str, user_prompt: str, reply:
     )
 
 
+def clear_conversation_histories(reason: str) -> None:
+    cleared_viewer_count = len(conversation_histories)
+    conversation_histories.clear()
+    print(
+        f"[stream] {reason}，已清除 {cleared_viewer_count} 位觀眾的 conversation_histories",
+        flush=True,
+    )
+
+
 def log_chat_message(username: str, message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     channel = TWITCH_CHANNEL or TWITCH_OWNER_ID or "unknown"
@@ -481,11 +490,21 @@ class GPTTwitchBot(commands.Bot):
         )
 
     async def setup_hook(self):
-        payload = eventsub.ChatMessageSubscription(
+        chat_payload = eventsub.ChatMessageSubscription(
             broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
             user_id=require_env("TWITCH_BOT_ID", TWITCH_BOT_ID),
         )
-        await self.subscribe_websocket(payload=payload)
+        await self.subscribe_websocket(payload=chat_payload)
+
+        stream_online_payload = eventsub.StreamOnlineSubscription(
+            broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
+        )
+        await self.subscribe_websocket(payload=stream_online_payload)
+
+        stream_offline_payload = eventsub.StreamOfflineSubscription(
+            broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
+        )
+        await self.subscribe_websocket(payload=stream_offline_payload)
 
     async def event_ready(self):
         print(f"Logged in as {TWITCH_BOT_NICK or TWITCH_BOT_ID}")
@@ -493,6 +512,16 @@ class GPTTwitchBot(commands.Bot):
         print(f"Always reply: {ALWAYS_REPLY}")
         print(f"Reply probability: {REPLY_PROBABILITY}")
         print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
+
+    async def event_stream_online(self, payload):
+        broadcaster = getattr(payload, "broadcaster", None)
+        broadcaster_name = getattr(broadcaster, "name", None) or TWITCH_CHANNEL or TWITCH_OWNER_ID
+        clear_conversation_histories(f"直播開始：{broadcaster_name}")
+
+    async def event_stream_offline(self, payload):
+        broadcaster = getattr(payload, "broadcaster", None)
+        broadcaster_name = getattr(broadcaster, "name", None) or TWITCH_CHANNEL or TWITCH_OWNER_ID
+        clear_conversation_histories(f"直播結束：{broadcaster_name}")
 
     async def send_gpt_reply(
         self,

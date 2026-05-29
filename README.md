@@ -135,6 +135,17 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | `MAX_REPLY_LENGTH` | GPT 回覆超過此長度會被截斷。 | 自行設定，建議符合聊天室可讀性。 |
 | `CONVERSATION_HISTORY_MAX_TURNS` | 同一觀眾保留最近幾輪「觀眾訊息 + bot 回覆」作為短期上下文。 | 預設 `4`。設為 `0` 可停用；此記憶只存在於程式執行期間，重啟後會清空。 |
 
+### 直播狀態與上下文清除
+
+Bot 會透過 Twitch EventSub 同時訂閱：
+
+- `stream.online`：監聽 `TWITCH_OWNER_ID` 對應頻道開始直播。
+- `stream.offline`：監聽 `TWITCH_OWNER_ID` 對應頻道結束直播。
+
+當收到直播開始或直播結束事件時，程式會執行 `conversation_histories.clear()`，清除所有觀眾的短期上下文，並在 console 印出清除訊息。這讓 bot 可以常駐執行，但每次直播重新開始時不沿用上一場的對話記憶。
+
+需要注意的是，如果 bot 是在直播已經開始後才啟動，可能收不到那一次 `stream.online` 事件；這種情況下會從 bot 啟動時的空上下文開始累積，直到下一次收到 `stream.offline` 或下一場 `stream.online` 才會再次清除。
+
 ### 上下文與 Prompt Injection 風險
 
 啟用 `CONVERSATION_HISTORY_MAX_TURNS` 後，同一觀眾先前的訊息會在後續回覆時再次送進模型，因此 prompt injection 風險會增加。例如觀眾可能先要求 bot 忽略原本指令、洩漏 system prompt 或輸出內部設定，並嘗試讓這些內容污染後續上下文。
@@ -226,16 +237,17 @@ LLM reply filter enabled: <true/false>
 
 1. 收到 Twitch 聊天室訊息。
 2. 如果訊息來自 bot 自己，直接忽略。
-3. 記錄聊天室訊息到 console。
-4. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGER` 時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
-5. 忽略空訊息、黑名單、過長訊息、指令和網址。
-6. 檢查全域與使用者冷卻時間。
-7. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
-8. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
-9. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-10. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
-11. 發送 `@username <reply>` 到 Twitch 聊天室。
-12. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
+3. 若收到 `stream.online` 或 `stream.offline` 事件，清除所有觀眾的短期上下文。
+4. 記錄聊天室訊息到 console。
+5. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGER` 時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
+6. 忽略空訊息、黑名單、過長訊息、指令和網址。
+7. 檢查全域與使用者冷卻時間。
+8. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
+9. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
+10. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
+11. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
+12. 發送 `@username <reply>` 到 Twitch 聊天室。
+13. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
 
 ## 常見問題
 
