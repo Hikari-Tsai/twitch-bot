@@ -98,7 +98,8 @@ DEFAULT_FORCE_TRIGGERS = (
 )
 
 FORCE_TRIGGERS = env_list("FORCE_TRIGGERS", DEFAULT_FORCE_TRIGGERS)
-OWNER_FORCE_TRIGGER = os.getenv("OWNER_FORCE_TRIGGER", "@小助手").strip() or "@小助手"
+DEFAULT_OWNER_FORCE_TRIGGERS = ("@小助手",)
+OWNER_FORCE_TRIGGERS = env_list("OWNER_FORCE_TRIGGERS", DEFAULT_OWNER_FORCE_TRIGGERS)
 
 
 def require_env(name: str, value: str | None) -> str:
@@ -221,8 +222,9 @@ def is_channel_owner(chatter_id: str | int | None) -> bool:
     return bool(TWITCH_OWNER_ID and str(chatter_id) == TWITCH_OWNER_ID)
 
 
-def has_owner_force_trigger(message: str) -> bool:
-    return OWNER_FORCE_TRIGGER.lower() in message.lower()
+def has_owner_force_triggers(message: str) -> bool:
+    lowered = message.lower()
+    return any(trigger.lower() in lowered for trigger in OWNER_FORCE_TRIGGERS)
 
 
 def load_system_prompt() -> str:
@@ -248,7 +250,7 @@ def render_prompt_template(template: str, **variables: str) -> str:
 def load_owner_command_prompt(
     *,
     username: str,
-    owner_force_trigger: str,
+    owner_force_triggers: str,
     message: str,
 ) -> str:
     if not OWNER_COMMAND_PROMPT_PATH.exists():
@@ -260,7 +262,7 @@ def load_owner_command_prompt(
     return render_prompt_template(
         prompt,
         username=username,
-        owner_force_trigger=owner_force_trigger,
+        owner_force_triggers=owner_force_triggers,
         message=message,
     )
 
@@ -452,13 +454,14 @@ def ask_gpt(
     )
 
     if is_owner_command:
+        owner_force_triggers = ", ".join(OWNER_FORCE_TRIGGERS)
         owner_command_prompt = load_owner_command_prompt(
             username=username,
-            owner_force_trigger=OWNER_FORCE_TRIGGER,
+            owner_force_triggers=owner_force_triggers,
             message=message,
         )
         user_prompt = (
-            f"聊天室台主 {username} 使用 {OWNER_FORCE_TRIGGER} 強制觸發：{message}\n\n"
+            f"聊天室台主 {username} 使用 {owner_force_triggers} 強制觸發：{message}\n\n"
             f"{owner_command_prompt}"
         )
 
@@ -569,7 +572,7 @@ class GPTTwitchBot(commands.Bot):
         content = message.text.strip()
         user_key = viewer_key(message.chatter.id, username)
         is_owner = is_channel_owner(message.chatter.id)
-        is_owner_command = is_owner and has_owner_force_trigger(content)
+        is_owner_command = is_owner and has_owner_force_triggers(content)
 
         log_chat_message(username, content)
 
