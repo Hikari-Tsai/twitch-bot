@@ -57,6 +57,7 @@ CONVERSATION_HISTORY_MAX_TURNS = int(os.getenv("CONVERSATION_HISTORY_MAX_TURNS",
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 LLM_REPLY_FILTER_ENABLED = env_bool("LLM_REPLY_FILTER_ENABLED", True)
 LLM_REPLY_FILTER_MODEL = os.getenv("LLM_REPLY_FILTER_MODEL", OPENAI_MODEL)
+BYPASS_REPLY_WHEN_STREAM_OFFLINE = env_bool("BYPASS_REPLY_WHEN_STREAM_OFFLINE", False)
 PROMPT_PATH = Path(os.getenv("PROMPT_PATH", "prompt/system_prompt.txt"))
 OWNER_COMMAND_PROMPT_PATH = Path(
     os.getenv("OWNER_COMMAND_PROMPT_PATH", "prompt/owner_command_prompt.txt")
@@ -69,6 +70,7 @@ DEFAULT_OWNER_COMMAND_PROMPT = (
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 last_global_reply_at = 0.0
+stream_is_online: bool | None = None
 last_user_reply_at = defaultdict(float)
 conversation_histories = defaultdict(
     lambda: deque(maxlen=max(0, CONVERSATION_HISTORY_MAX_TURNS) * 2)
@@ -98,7 +100,8 @@ DEFAULT_FORCE_TRIGGERS = (
 )
 
 FORCE_TRIGGERS = env_list("FORCE_TRIGGERS", DEFAULT_FORCE_TRIGGERS)
-OWNER_FORCE_TRIGGER = os.getenv("OWNER_FORCE_TRIGGER", "@小助手").strip() or "@小助手"
+DEFAULT_OWNER_FORCE_TRIGGERS = ("@小助手",)
+OWNER_FORCE_TRIGGERS = env_list("OWNER_FORCE_TRIGGERS", DEFAULT_OWNER_FORCE_TRIGGERS)
 
 
 def require_env(name: str, value: str | None) -> str:
@@ -212,6 +215,42 @@ def validate_twitch_token_scopes() -> None:
         )
 
 
+def fetch_stream_is_online() -> bool | None:
+    token = normalize_twitch_token(TWITCH_TOKEN)
+    if not token or not TWITCH_CLIENT_ID or not TWITCH_OWNER_ID:
+        return None
+
+    url = f"https://api.twitch.tv/helix/streams?user_id={TWITCH_OWNER_ID}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Client-ID": TWITCH_CLIENT_ID,
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            stream_data = json.load(response)
+    except Exception as e:
+        if is_network_error(e):
+            print_network_error("查詢 Twitch 直播狀態失敗，無法套用離線略過回覆設定", e)
+            return None
+
+        raise
+
+    return bool(stream_data.get("data"))
+
+
+def set_stream_online_status(is_online: bool | None) -> None:
+    global stream_is_online
+    stream_is_online = is_online
+
+
+def should_bypass_reply_for_offline_stream() -> bool:
+    return BYPASS_REPLY_WHEN_STREAM_OFFLINE and stream_is_online is False
+
+
 def has_force_trigger(message: str) -> bool:
     lowered = message.lower()
     return any(trigger.lower() in lowered for trigger in FORCE_TRIGGERS)
@@ -221,8 +260,9 @@ def is_channel_owner(chatter_id: str | int | None) -> bool:
     return bool(TWITCH_OWNER_ID and str(chatter_id) == TWITCH_OWNER_ID)
 
 
-def has_owner_force_trigger(message: str) -> bool:
-    return OWNER_FORCE_TRIGGER.lower() in message.lower()
+def has_owner_force_triggers(message: str) -> bool:
+    lowered = message.lower()
+    return any(trigger.lower() in lowered for trigger in OWNER_FORCE_TRIGGERS)
 
 
 def load_system_prompt() -> str:
@@ -248,7 +288,7 @@ def render_prompt_template(template: str, **variables: str) -> str:
 def load_owner_command_prompt(
     *,
     username: str,
-    owner_force_trigger: str,
+    owner_force_triggers: str,
     message: str,
 ) -> str:
     if not OWNER_COMMAND_PROMPT_PATH.exists():
@@ -260,7 +300,7 @@ def load_owner_command_prompt(
     return render_prompt_template(
         prompt,
         username=username,
-        owner_force_trigger=owner_force_trigger,
+        owner_force_triggers=owner_force_triggers,
         message=message,
     )
 
@@ -452,13 +492,14 @@ def ask_gpt(
     )
 
     if is_owner_command:
+        owner_force_triggers = ", ".join(OWNER_FORCE_TRIGGERS)
         owner_command_prompt = load_owner_command_prompt(
             username=username,
-            owner_force_trigger=OWNER_FORCE_TRIGGER,
+            owner_force_triggers=owner_force_triggers,
             message=message,
         )
         user_prompt = (
-            f"聊天室台主 {username} 使用 {OWNER_FORCE_TRIGGER} 強制觸發：{message}\n\n"
+            f"聊天室台主 {username} 使用 {owner_force_triggers} 強制觸發：{message}\n\n"
             f"{owner_command_prompt}"
         )
 
@@ -512,15 +553,19 @@ class GPTTwitchBot(commands.Bot):
         print(f"Always reply: {ALWAYS_REPLY}")
         print(f"Reply probability: {REPLY_PROBABILITY}")
         print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
+        print(f"Bypass reply when stream offline: {BYPASS_REPLY_WHEN_STREAM_OFFLINE}")
+        print(f"Stream online: {stream_is_online if stream_is_online is not None else 'unknown'}")
 
     async def event_stream_online(self, payload):
         broadcaster = getattr(payload, "broadcaster", None)
         broadcaster_name = getattr(broadcaster, "name", None) or TWITCH_CHANNEL or TWITCH_OWNER_ID
+        set_stream_online_status(True)
         clear_conversation_histories(f"直播開始：{broadcaster_name}")
 
     async def event_stream_offline(self, payload):
         broadcaster = getattr(payload, "broadcaster", None)
         broadcaster_name = getattr(broadcaster, "name", None) or TWITCH_CHANNEL or TWITCH_OWNER_ID
+        set_stream_online_status(False)
         clear_conversation_histories(f"直播結束：{broadcaster_name}")
 
     async def send_gpt_reply(
@@ -569,9 +614,13 @@ class GPTTwitchBot(commands.Bot):
         content = message.text.strip()
         user_key = viewer_key(message.chatter.id, username)
         is_owner = is_channel_owner(message.chatter.id)
-        is_owner_command = is_owner and has_owner_force_trigger(content)
+        is_owner_command = is_owner and has_owner_force_triggers(content)
 
         log_chat_message(username, content)
+
+        if should_bypass_reply_for_offline_stream():
+            print(f"Offline stream skip @{username}: 已設定離線時略過 LLM 回覆")
+            return
 
         if is_owner and not is_owner_command:
             return
@@ -616,6 +665,8 @@ class GPTTwitchBot(commands.Bot):
 if __name__ == "__main__":
     try:
         validate_twitch_token_scopes()
+        if BYPASS_REPLY_WHEN_STREAM_OFFLINE:
+            set_stream_online_status(fetch_stream_is_online())
         bot = GPTTwitchBot()
         bot.run(token=normalize_twitch_token(TWITCH_TOKEN))
     except Exception as e:

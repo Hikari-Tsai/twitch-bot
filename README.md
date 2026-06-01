@@ -16,7 +16,8 @@
 - 支援全域與單一使用者冷卻時間，避免洗版。
 - 可忽略指令、網址、過長訊息與黑名單使用者。
 - 可用 LLM 做二次判斷，決定訊息是否值得公開回覆。
-- 預設忽略台主訊息；只有台主使用 `OWNER_FORCE_TRIGGER` 強制觸發時才回覆，並優先執行台主交辦的聊天室任務。
+- 可設定主播離線時略過 LLM 機器人回覆。
+- 預設忽略台主訊息；只有台主使用 `OWNER_FORCE_TRIGGERS` 任一強制觸發詞時才回覆，並優先執行台主交辦的聊天室任務。
 - 啟動時會驗證 Twitch token scope，以及 token 使用者是否符合 `TWITCH_BOT_ID`。
 
 ## 專案結構
@@ -90,13 +91,14 @@ prompt/owner_command_prompt.txt
 | `OPENAI_MODEL` | 主要回覆模型，例如 `gpt-4.1-mini` 或其他可用 Responses API 的模型。 | 到 [OpenAI Models](https://platform.openai.com/docs/models) 查可用 model id，或用 Models API 列出帳號可用模型。 |
 | `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 | 自行決定；想省 token 或降低延遲可設 `false`。 |
 | `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
+| `BYPASS_REPLY_WHEN_STREAM_OFFLINE` | 主播離線時是否略過 LLM 機器人回覆。`true` 時，已確認 `TWITCH_OWNER_ID` 沒有直播就不產生也不送出 LLM 回覆；`false` 時就算下播也會正常回覆(方便測試) | 自行決定。若 bot 只想在開台時互動可設 `true`。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 | `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
 
 `OWNER_COMMAND_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
 
 - `{username}`：台主的 Twitch 顯示名稱。
-- `{owner_force_trigger}`：台主強制觸發詞，例如 `@小幫手`。
+- `{owner_force_triggers}`：台主強制觸發詞清單，例如 `@小幫手, @bot`。
 - `{message}`：台主送出的完整聊天室訊息。
 
 ### Twitch
@@ -127,8 +129,8 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 | --- | --- | --- |
 | `ALWAYS_REPLY` | `true` 時通過忽略規則與冷卻後都會回覆。 | 自行決定。正式直播建議先用 `false` 或拉高冷卻時間。 |
 | `REPLY_PROBABILITY` | `ALWAYS_REPLY=false` 時的隨機回覆機率，例如 `0.25`。 | 自行設定，範圍建議 `0.0` 到 `1.0`。 |
-| `FORCE_TRIGGERS` | 一般觀眾強制觸發詞，多個詞用半形逗號分隔，例如 `小助手,bot,@小助手`。 | 自行設定。訊息包含任一詞時，通過忽略規則與冷卻後必定回覆，並略過隨機回覆機率與 LLM 回覆判斷器。 |
-| `OWNER_FORCE_TRIGGER` | 台主強制觸發詞，例如 `@小幫手`。 | 自行設定。`TWITCH_OWNER_ID` 的訊息預設忽略，只有包含此詞時才會強制回覆。 |
+| `FORCE_TRIGGERS` | 一般觀眾強制觸發詞，多個詞用半形逗號分隔，例如 `小助手,bot,@小助手`。 | 自行設定。訊息包含任一詞時，通過忽略規則與冷卻後必定回覆，並略過隨機回覆機率與 LLM 回覆判斷器；留空時使用預設值 `小助手,bot,@小助手`。 |
+| `OWNER_FORCE_TRIGGERS` | 台主強制觸發詞，多個詞用半形逗號分隔，例如 `@小幫手,@bot`。 | 自行設定。`TWITCH_OWNER_ID` 的訊息預設忽略，只有包含任一詞時才會強制回覆；留空時使用預設值 `@小助手`。 |
 | `GLOBAL_COOLDOWN_SECONDS` | Bot 兩次公開回覆之間的全域冷卻秒數。 | 自行設定，正式直播建議不要太低。 |
 | `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
 | `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
@@ -143,6 +145,10 @@ Bot 會透過 Twitch EventSub 同時訂閱：
 - `stream.offline`：監聽 `TWITCH_OWNER_ID` 對應頻道結束直播。
 
 當收到直播開始或直播結束事件時，程式會執行 `conversation_histories.clear()`，清除所有觀眾的短期上下文，並在 console 印出清除訊息。這讓 bot 可以常駐執行，但每次直播重新開始時不沿用上一場的對話記憶。
+
+若 `BYPASS_REPLY_WHEN_STREAM_OFFLINE=true`，程式啟動時會用 Twitch Helix Streams API 查詢一次 `TWITCH_OWNER_ID` 是否正在直播，後續再依 `stream.online` / `stream.offline` 事件更新狀態。當狀態已確認為離線時，bot 仍會記錄聊天室訊息，但會略過 LLM 回覆判斷、回覆產生與聊天室送出；如果啟動時因網路問題無法確認直播狀態，程式會維持原本回覆流程，直到收到直播狀態事件。
+
+主要的原因是，為了避免常駐使用的情況下記憶體會溢出，且考慮不同直播的對話保留的重要性並不高，因此如此設計。
 
 需要注意的是，如果 bot 是在直播已經開始後才啟動，可能收不到那一次 `stream.online` 事件；這種情況下會從 bot 啟動時的空上下文開始累積，直到下一次收到 `stream.offline` 或下一場 `stream.online` 才會再次清除。
 
@@ -231,6 +237,8 @@ Connected to channel: <channel name>
 Always reply: <true/false>
 Reply probability: <number>
 LLM reply filter enabled: <true/false>
+Bypass reply when stream offline: <true/false>
+Stream online: <true/false/unknown>
 ```
 
 ## 回覆流程
@@ -239,15 +247,16 @@ LLM reply filter enabled: <true/false>
 2. 如果訊息來自 bot 自己，直接忽略。
 3. 若收到 `stream.online` 或 `stream.offline` 事件，清除所有觀眾的短期上下文。
 4. 記錄聊天室訊息到 console。
-5. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGER` 時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
-6. 忽略空訊息、黑名單、過長訊息、指令和網址。
-7. 檢查全域與使用者冷卻時間。
-8. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
-9. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
-10. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-11. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
-12. 發送 `@username <reply>` 到 Twitch 聊天室。
-13. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
+5. 若 `BYPASS_REPLY_WHEN_STREAM_OFFLINE=true` 且已確認主播離線，直接略過 LLM 機器人回覆。
+6. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGERS` 任一強制觸發詞時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
+7. 忽略空訊息、黑名單、過長訊息、指令和網址。
+8. 檢查全域與使用者冷卻時間。
+9. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
+10. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
+11. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
+12. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
+13. 發送 `@username <reply>` 到 Twitch 聊天室。
+14. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
 
 ## 常見問題
 
