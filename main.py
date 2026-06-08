@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import time
 import random
@@ -42,6 +43,7 @@ TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 TWITCH_BOT_ID = os.getenv("TWITCH_BOT_ID")
 TWITCH_OWNER_ID = os.getenv("TWITCH_OWNER_ID") or os.getenv("TWITCH_CHANNEL_ID")
 TWITCH_TOKEN = os.getenv("TWITCH_TOKEN")
+TWITCH_REFRESH_TOKEN = os.getenv("TWITCH_REFRESH_TOKEN")
 TWITCH_BOT_NICK = os.getenv("TWITCH_BOT_NICK")
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL")
 
@@ -125,6 +127,17 @@ def normalize_twitch_token(token: str | None) -> str | None:
         return token.split(":", 1)[1]
 
     return token
+
+
+def normalize_optional_secret(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    value = value.strip()
+    if not value or value.startswith("REPLACE_WITH_"):
+        return None
+
+    return value
 
 
 def iter_exception_chain(error: BaseException):
@@ -394,6 +407,10 @@ def should_reply_by_llm(username: str, message: str) -> tuple[bool, str]:
     return should_send, str(result.get("reason", "")).strip()
 
 
+async def should_reply_by_llm_async(username: str, message: str) -> tuple[bool, str]:
+    return await asyncio.to_thread(should_reply_by_llm, username, message)
+
+
 def trim_reply(text: str) -> str:
     text = text.strip().replace("\n", " ")
 
@@ -518,6 +535,22 @@ def ask_gpt(
     return trim_reply(response.output_text), user_prompt
 
 
+async def ask_gpt_async(
+    username: str,
+    message: str,
+    viewer_history_key: str,
+    *,
+    is_owner_command: bool = False,
+) -> tuple[str, str]:
+    return await asyncio.to_thread(
+        ask_gpt,
+        username,
+        message,
+        viewer_history_key,
+        is_owner_command=is_owner_command,
+    )
+
+
 class GPTTwitchBot(commands.Bot):
     def __init__(self):
         require_twitch_auth()
@@ -531,6 +564,18 @@ class GPTTwitchBot(commands.Bot):
         )
 
     async def setup_hook(self):
+        token = normalize_twitch_token(TWITCH_TOKEN)
+        refresh = normalize_optional_secret(TWITCH_REFRESH_TOKEN)
+
+        if token and refresh:
+            await self.add_token(token, refresh)
+        elif token:
+            print(
+                "[twitch] TWITCH_REFRESH_TOKEN 未設定；長時間運作或 websocket reconnect 後，"
+                "若 access token 過期可能無法重新訂閱 EventSub。",
+                flush=True,
+            )
+
         chat_payload = eventsub.ChatMessageSubscription(
             broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
             user_id=require_env("TWITCH_BOT_ID", TWITCH_BOT_ID),
@@ -579,7 +624,7 @@ class GPTTwitchBot(commands.Bot):
     ) -> None:
         global last_global_reply_at
 
-        reply, user_prompt = ask_gpt(
+        reply, user_prompt = await ask_gpt_async(
             username,
             content,
             user_key,
@@ -646,7 +691,7 @@ class GPTTwitchBot(commands.Bot):
 
             if LLM_REPLY_FILTER_ENABLED and not force_triggered:
                 # 如果有用 @小助手 等強制觸發詞，就不經過 LLM 判斷，直接回覆。
-                should_send, reason = should_reply_by_llm(username, content)
+                should_send, reason = await should_reply_by_llm_async(username, content)
 
                 if not should_send:
                     print(f"LLM skip @{username}: {reason or '不需回應'}")
