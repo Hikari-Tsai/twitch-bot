@@ -92,8 +92,21 @@ prompt/owner_command_prompt.txt
 | `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 | 自行決定；想省 token 或降低延遲可設 `false`。 |
 | `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
 | `BYPASS_REPLY_WHEN_STREAM_OFFLINE` | 主播離線時是否略過 LLM 機器人回覆。`true` 時，已確認 `TWITCH_OWNER_ID` 沒有直播就不產生也不送出 LLM 回覆；`false` 時就算下播也會正常回覆(方便測試) | 自行決定。若 bot 只想在開台時互動可設 `true`。 |
+| `CUSTOM_EMOTES_ENABLED` | 是否允許模型使用自訂 Twitch 表情符號。`true` 時會讀取 `CUSTOM_EMOTES_JSON_PATH`，成功載入後模型可依情境自行選用；`false` 時不提供表情符號清單給模型。 | 自行決定。若 bot 帳號不一定有表情符號使用資格，建議先設 `false`。 |
+| `CUSTOM_EMOTES_JSON_PATH` | 自訂表情符號 JSON 檔案路徑。JSON 必須是 object，key 是聊天室中實際送出的表情符號文字，value 是給模型看的用途描述。未設定、檔案不存在或格式錯誤時會自動停用。 | 本機檔案路徑，例如 `custom_emotes.json`。不要放 secret。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 | `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
+
+`CUSTOM_EMOTES_JSON_PATH` 指向的檔案範例：
+
+```json
+{
+  ":myHype": "興奮、慶祝、氣氛很嗨時使用",
+  ":myCry": "難過、失誤、被打敗時使用"
+}
+```
+
+key 必須是單一 token，不能包含空白。啟用後，模型會依情境自行決定是否使用 0 到 2 個表情符號；如果 Twitch 送出回覆時疑似因 bot 帳號無法使用自訂表情符號而失敗，程式不會在聊天室送出錯誤訊息，會在本次執行期間停用自訂表情符號，並移除表情符號後重送純文字回覆。
 
 `OWNER_COMMAND_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
 
@@ -258,6 +271,7 @@ Always reply: <true/false>
 Reply probability: <number>
 LLM reply filter enabled: <true/false>
 Bypass reply when stream offline: <true/false>
+Custom emotes available: <true/false>
 Stream online: <true/false/unknown>
 ```
 
@@ -274,7 +288,7 @@ Stream online: <true/false/unknown>
 9. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
 10. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
 11. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-12. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆。
+12. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆；若自訂表情符號已啟用且 JSON 成功載入，模型可依情境加入可用表情符號。
 13. 發送 `@username <reply>` 到 Twitch 聊天室。
 14. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
 
