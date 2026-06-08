@@ -106,6 +106,7 @@ prompt/owner_command_prompt.txt
 | 變數 | 說明 | 取得方式 |
 | --- | --- | --- |
 | `TWITCH_TOKEN` | Bot 帳號的 OAuth user access token，可包含或不包含 `oauth:` 前綴。 | 建議用 Twitch CLI：`twitch token --user-token --scopes "user:read:chat user:write:chat"`。Twitch chat EventSub 讀取訊息需要 `user:read:chat`，發送聊天訊息需要 `user:write:chat`。 |
+| `TWITCH_REFRESH_TOKEN` | `TWITCH_TOKEN` 對應的 OAuth refresh token。長時間常駐建議設定，讓 TwitchIO 能在 access token 過期或 websocket reconnect 後自動刷新並重新訂閱 EventSub。 | 使用能回傳 refresh token 的 OAuth flow 產生。不要提交到 Git。 |
 | `TWITCH_CLIENT_ID` | Twitch Developer Console 應用程式的 Client ID。 | 到 [Twitch Developer Console](https://dev.twitch.tv/console/apps) 建立或選擇 app，複製 Client ID。 |
 | `TWITCH_CLIENT_SECRET` | 目前程式可讀取但不是 token 登入的主要必填項；若未使用 client secret flow 可留空或註解。 | 在 Twitch Developer Console 的 app 頁面產生。不要提交到 Git。 |
 | `TWITCH_BOT_ID` | Bot 帳號的 Twitch user ID，必須與 `TWITCH_TOKEN` 所屬帳號一致。 | 用 Twitch Helix Get Users 查 bot 帳號 login，回傳的 `id` 即 user ID。 |
@@ -122,6 +123,25 @@ curl -H "Client-ID: <TWITCH_CLIENT_ID>" \
 ```
 
 回傳 JSON 中的 `data[0].id` 就是 `TWITCH_BOT_ID` 或 `TWITCH_OWNER_ID` 要填的值。
+
+#### 取得 `TWITCH_REFRESH_TOKEN`
+
+本專案提供 Twitch Device Code Flow helper，可用 bot 帳號授權並自動更新本機 `.env`：
+
+```bash
+python3 scripts/get_twitch_device_token.py
+```
+
+執行後依 terminal 顯示的 Twitch 啟用網址與授權碼操作。請確認瀏覽器登入的是 `TWITCH_BOT_ID` 對應的 bot 帳號，不是台主帳號。授權成功後，script 會更新 `.env` 內的 `TWITCH_TOKEN` 與 `TWITCH_REFRESH_TOKEN`，且不會把 token 印到 terminal。
+
+若要用自己的 OAuth 工具，請使用會回傳 refresh token 的 user access token flow，例如 Twitch OAuth Device Code Flow 或 Authorization Code Grant Flow，scope 至少包含：
+
+```text
+user:read:chat
+user:write:chat
+```
+
+`TWITCH_REFRESH_TOKEN` 屬於 secret，等同於可持續換發 access token；不要提交、貼到公開文件、印到 log，或放進 prompt。
 
 ### 回覆策略
 
@@ -272,6 +292,12 @@ Stream online: <true/false/unknown>
 user:read:chat
 user:write:chat
 ```
+
+### `Unable to resubscribe to subscription "<UUID>" on websocket`
+
+這是 TwitchIO 在 websocket reconnect 後，嘗試把舊的 EventSub subscription 重新建立到新 websocket session 時失敗。常見原因是 `TWITCH_TOKEN` 已過期、缺少 `TWITCH_REFRESH_TOKEN` 無法自動刷新、Twitch 短暫網路/API 錯誤，或程式阻塞 event loop 導致 websocket 心跳與重連處理延遲。
+
+請先檢查錯誤訊息後面的 HTTP 狀態碼：如果是 401/403，重新產生 bot 帳號 token，確認 scope 仍包含 `user:read:chat` 和 `user:write:chat`，並設定對應的 `TWITCH_REFRESH_TOKEN`；如果是 5xx 或網路 timeout，通常是暫時性連線問題，重啟 bot 會重新建立 subscription。程式已把 OpenAI 同步呼叫移出 websocket event loop，降低長時間運作時錯過 heartbeat/reconnect 的機率。
 
 ### `找不到 prompt 檔案`
 
