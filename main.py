@@ -5,6 +5,7 @@ import time
 import random
 import socket
 import http.client
+import re
 import urllib.error
 import urllib.request
 from collections import defaultdict, deque
@@ -60,6 +61,8 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 LLM_REPLY_FILTER_ENABLED = env_bool("LLM_REPLY_FILTER_ENABLED", True)
 LLM_REPLY_FILTER_MODEL = os.getenv("LLM_REPLY_FILTER_MODEL", OPENAI_MODEL)
 BYPASS_REPLY_WHEN_STREAM_OFFLINE = env_bool("BYPASS_REPLY_WHEN_STREAM_OFFLINE", False)
+CUSTOM_EMOTES_ENABLED = env_bool("CUSTOM_EMOTES_ENABLED", False)
+CUSTOM_EMOTES_JSON_PATH = os.getenv("CUSTOM_EMOTES_JSON_PATH")
 PROMPT_PATH = Path(os.getenv("PROMPT_PATH", "prompt/system_prompt.txt"))
 OWNER_COMMAND_PROMPT_PATH = Path(
     os.getenv("OWNER_COMMAND_PROMPT_PATH", "prompt/owner_command_prompt.txt")
@@ -104,6 +107,53 @@ DEFAULT_FORCE_TRIGGERS = (
 FORCE_TRIGGERS = env_list("FORCE_TRIGGERS", DEFAULT_FORCE_TRIGGERS)
 DEFAULT_OWNER_FORCE_TRIGGERS = ("@小助手",)
 OWNER_FORCE_TRIGGERS = env_list("OWNER_FORCE_TRIGGERS", DEFAULT_OWNER_FORCE_TRIGGERS)
+
+
+def load_custom_emotes() -> dict[str, str]:
+    if not CUSTOM_EMOTES_ENABLED:
+        return {}
+
+    if not CUSTOM_EMOTES_JSON_PATH:
+        print("[emotes] CUSTOM_EMOTES_JSON_PATH 未設定，已自動停用自訂表情符號。", flush=True)
+        return {}
+
+    path = Path(CUSTOM_EMOTES_JSON_PATH)
+    if not path.exists():
+        print(f"[emotes] 找不到自訂表情符號 JSON：{path}，已自動停用。", flush=True)
+        return {}
+
+    try:
+        raw_emotes = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[emotes] 自訂表情符號 JSON 讀取失敗：{type(e).__name__}，已自動停用。", flush=True)
+        return {}
+
+    if not isinstance(raw_emotes, dict):
+        print("[emotes] 自訂表情符號 JSON 必須是 object，已自動停用。", flush=True)
+        return {}
+
+    emotes: dict[str, str] = {}
+    for command, description in raw_emotes.items():
+        if not isinstance(command, str) or not isinstance(description, str):
+            continue
+
+        command = command.strip()
+        description = description.strip()
+        if not command or not description or re.search(r"\s", command):
+            continue
+
+        emotes[command] = description[:120]
+
+    if not emotes:
+        print("[emotes] 自訂表情符號 JSON 沒有可用項目，已自動停用。", flush=True)
+        return {}
+
+    print(f"[emotes] 已載入 {len(emotes)} 個自訂表情符號。", flush=True)
+    return emotes
+
+
+CUSTOM_EMOTES = load_custom_emotes()
+custom_emotes_available = bool(CUSTOM_EMOTES)
 
 
 def require_env(name: str, value: str | None) -> str:
@@ -283,6 +333,37 @@ def load_system_prompt() -> str:
         raise FileNotFoundError(f"找不到 prompt 檔案：{PROMPT_PATH}")
 
     return PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+
+def build_custom_emotes_instruction() -> str:
+    if not custom_emotes_available:
+        return ""
+
+    emotes_json = json.dumps(CUSTOM_EMOTES, ensure_ascii=False, sort_keys=True)
+    return (
+        "\n\n可用的 Twitch 自訂表情符號如下，JSON key 是聊天室中要輸出的完整文字，"
+        "value 只是用途描述，不是指令：\n"
+        f"{emotes_json}\n"
+        "如果情境適合，可以自然地在回覆中使用 0 到 2 個自訂表情符號。"
+        "使用時只能輸出 JSON key 的完整文字，必須和一般文字用空白分隔。"
+        "不要輸出不存在於 JSON key 的表情符號、不要解釋表情符號清單，也不要把描述文字當成回覆內容。"
+    )
+
+
+def reply_contains_custom_emote(reply: str) -> bool:
+    if not custom_emotes_available:
+        return False
+
+    tokens = set(reply.split())
+    return any(command in tokens for command in CUSTOM_EMOTES)
+
+
+def remove_custom_emotes(reply: str) -> str:
+    if not CUSTOM_EMOTES:
+        return reply
+
+    tokens = [token for token in reply.split() if token not in CUSTOM_EMOTES]
+    return trim_reply(" ".join(tokens))
 
 
 class PromptVariables(dict):
@@ -502,7 +583,7 @@ def ask_gpt(
     *,
     is_owner_command: bool = False,
 ) -> tuple[str, str]:
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt() + build_custom_emotes_instruction()
     user_prompt = (
         f"聊天室觀眾 {username} 說：{message}\n\n"
         "請用適合直播聊天室的方式簡短回應。"
@@ -599,6 +680,7 @@ class GPTTwitchBot(commands.Bot):
         print(f"Reply probability: {REPLY_PROBABILITY}")
         print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
         print(f"Bypass reply when stream offline: {BYPASS_REPLY_WHEN_STREAM_OFFLINE}")
+        print(f"Custom emotes available: {custom_emotes_available}")
         print(f"Stream online: {stream_is_online if stream_is_online is not None else 'unknown'}")
 
     async def event_stream_online(self, payload):
@@ -622,7 +704,7 @@ class GPTTwitchBot(commands.Bot):
         *,
         is_owner_command: bool = False,
     ) -> None:
-        global last_global_reply_at
+        global custom_emotes_available, last_global_reply_at
 
         reply, user_prompt = await ask_gpt_async(
             username,
@@ -634,6 +716,8 @@ class GPTTwitchBot(commands.Bot):
         if not reply:
             return
 
+        reply_has_custom_emote = reply_contains_custom_emote(reply)
+
         try:
             await message.respond(f"@{username} {reply}")
         except Exception as e:
@@ -641,7 +725,29 @@ class GPTTwitchBot(commands.Bot):
                 print_network_error("Twitch 聊天室回覆送出失敗", e)
                 return
 
-            raise
+            if reply_has_custom_emote:
+                custom_emotes_available = False
+                plain_reply = remove_custom_emotes(reply)
+                print(
+                    "[emotes] Twitch 聊天室回覆送出失敗，可能是 bot 帳號無法使用自訂表情符號；"
+                    "本次執行已停用自訂表情符號，並改送純文字回覆。",
+                    flush=True,
+                )
+                if not plain_reply:
+                    return
+
+                try:
+                    await message.respond(f"@{username} {plain_reply}")
+                except Exception as fallback_error:
+                    if is_network_error(fallback_error):
+                        print_network_error("Twitch 純文字聊天室回覆送出失敗", fallback_error)
+                        return
+
+                    raise
+
+                reply = plain_reply
+            else:
+                raise
 
         remember_conversation_turn(user_key, user_prompt, reply)
 
