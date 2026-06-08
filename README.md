@@ -101,8 +101,8 @@ prompt/owner_command_prompt.txt
 
 ```json
 {
-  ":myHype": "興奮、慶祝、氣氛很嗨時使用",
-  ":myCry": "難過、失誤、被打敗時使用"
+  "myHype": "興奮、慶祝、氣氛很嗨時使用",
+  "myCry": "難過、失誤、被打敗時使用"
 }
 ```
 
