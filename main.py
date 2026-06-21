@@ -212,6 +212,12 @@ def is_network_error(error: BaseException) -> bool:
     )
 
     for chained_error in iter_exception_chain(error):
+        if isinstance(chained_error, urllib.error.HTTPError) and chained_error.code in {408, 429}:
+            return True
+
+        if isinstance(chained_error, urllib.error.HTTPError) and 400 <= chained_error.code < 500:
+            return False
+
         if isinstance(chained_error, network_error_types):
             return True
 
@@ -253,6 +259,27 @@ def validate_twitch_token_scopes() -> None:
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             token_data = json.load(response)
+    except urllib.error.HTTPError as e:
+        if e.code in {408, 429}:
+            print_network_error("驗證 Twitch token scope 暫時失敗，可能是 Twitch 限流或 request timeout", e)
+            raise
+
+        if e.code == 401:
+            raise RuntimeError(
+                "TWITCH_TOKEN 無效或已過期。請用 bot 帳號重新產生 token，"
+                "scope 至少需要 user:read:chat 和 user:write:chat；"
+                "可執行：python3 scripts/get_twitch_device_token.py"
+            ) from e
+
+        if 400 <= e.code < 500:
+            raise RuntimeError(
+                f"Twitch token 驗證失敗：HTTP {e.code}。"
+                "請確認 TWITCH_TOKEN 是有效的 bot 帳號 user access token。"
+            ) from e
+
+        if is_network_error(e):
+            print_network_error("驗證 Twitch token scope 失敗，可能是網路不穩或 Twitch 連線中斷", e)
+        raise
     except Exception as e:
         if is_network_error(e):
             print_network_error("驗證 Twitch token scope 失敗，可能是網路不穩或 Twitch 連線中斷", e)
@@ -824,5 +851,8 @@ if __name__ == "__main__":
         if is_network_error(e) or is_temporary_api_status_error(e):
             print_network_error("Bot 連線中斷或啟動時連線失敗", e)
             raise
+
+        if isinstance(e, RuntimeError):
+            raise SystemExit(f"[startup] {e}") from None
 
         raise

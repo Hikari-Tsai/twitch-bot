@@ -307,6 +307,16 @@ user:read:chat
 user:write:chat
 ```
 
+### `TWITCH_TOKEN 無效或已過期`
+
+代表 Twitch token 驗證回傳 401，通常是 `.env` 裡的 `TWITCH_TOKEN` 過期、被撤銷，或不是有效的 Twitch user access token。請用 bot 帳號重新授權：
+
+```bash
+python3 scripts/get_twitch_device_token.py
+```
+
+授權成功後，script 會更新 `.env` 內的 `TWITCH_TOKEN` 與 `TWITCH_REFRESH_TOKEN`，且不會把 token 印到 terminal。請確認授權時登入的是 `TWITCH_BOT_ID` 對應的 bot 帳號。
+
 ### `Unable to resubscribe to subscription "<UUID>" on websocket`
 
 這是 TwitchIO 在 websocket reconnect 後，嘗試把舊的 EventSub subscription 重新建立到新 websocket session 時失敗。常見原因是 `TWITCH_TOKEN` 已過期、缺少 `TWITCH_REFRESH_TOKEN` 無法自動刷新、Twitch 短暫網路/API 錯誤，或程式阻塞 event loop 導致 websocket 心跳與重連處理延遲。
