@@ -44,6 +44,7 @@
 ├── requirements.txt                # Python 套件依賴
 └── prompt/
     ├── owner_command_prompt.txt.example # 台主強制觸發追加 Prompt 範例
+    ├── event_rule_prompt.txt.example # 檔期活動規則回覆 Prompt 範例
     └── system_prompt.txt.example   # System Prompt 設定提示詞
 ```
 
@@ -75,11 +76,13 @@ pip install -r requirements.txt
 cp .env.example .env
 cp prompt/system_prompt.txt.example prompt/system_prompt.txt
 cp prompt/owner_command_prompt.txt.example prompt/owner_command_prompt.txt
+cp prompt/event_rule_prompt.txt.example prompt/event_rule_prompt.txt
 ```
 
 接著編輯 `.env`，填入實際密鑰與 Twitch 帳號資訊。
 prompt/system_prompt.txt需要填寫主播的人格設定
 prompt/owner_command_prompt.txt
+prompt/event_rule_prompt.txt需要填寫本次檔期活動規則
 
 ## 環境變數
 
@@ -96,6 +99,7 @@ prompt/owner_command_prompt.txt
 | `CUSTOM_EMOTES_JSON_PATH` | 自訂表情符號 JSON 檔案路徑。JSON 必須是 object，key 是聊天室中實際送出的表情符號文字，value 是給模型看的用途描述。未設定、檔案不存在或格式錯誤時會自動停用。 | 本機檔案路徑，例如 `custom_emotes.json`。不要放 secret。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 | `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
+| `EVENT_RULE_PROMPT_PATH` | 檔期活動規則觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/event_rule_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/event_rule_prompt.txt.example` 複製並填入本次活動規則。若檔案不存在，程式會使用內建預設文字。 |
 
 `CUSTOM_EMOTES_JSON_PATH` 指向的檔案範例：
 
@@ -113,6 +117,12 @@ key 必須是單一 token，不能包含空白。啟用後，模型會依情境�
 - `{username}`：台主的 Twitch 顯示名稱。
 - `{owner_force_triggers}`：台主強制觸發詞清單，例如 `@小幫手, @bot`。
 - `{message}`：台主送出的完整聊天室訊息。
+
+`EVENT_RULE_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
+
+- `{username}`：詢問活動規則的觀眾 Twitch 顯示名稱。
+- `{event_rule_triggers}`：檔期活動規則觸發詞清單，例如 `活動規則, 檔期規則`。
+- `{message}`：觀眾送出的完整聊天室訊息。
 
 ### Twitch
 
@@ -164,6 +174,7 @@ user:write:chat
 | `REPLY_PROBABILITY` | `ALWAYS_REPLY=false` 時的隨機回覆機率，例如 `0.25`。 | 自行設定，範圍建議 `0.0` 到 `1.0`。 |
 | `FORCE_TRIGGERS` | 一般觀眾強制觸發詞，多個詞用半形逗號分隔，例如 `小助手,bot,@小助手`。 | 自行設定。訊息包含任一詞時，通過忽略規則與冷卻後必定回覆，並略過隨機回覆機率與 LLM 回覆判斷器；留空時使用預設值 `小助手,bot,@小助手`。 |
 | `OWNER_FORCE_TRIGGERS` | 台主強制觸發詞，多個詞用半形逗號分隔，例如 `@小幫手,@bot`。 | 自行設定。`TWITCH_OWNER_ID` 的訊息預設忽略，只有包含任一詞時才會強制回覆；留空時使用預設值 `@小助手`。 |
+| `EVENT_RULE_TRIGGERS` | 檔期活動規則觸發詞，多個詞用半形逗號分隔，例如 `活動規則,檔期規則,活動怎麼玩`。 | 自行設定。訊息包含任一詞時，通過忽略規則與冷卻後必定回覆，略過隨機回覆機率與 LLM 回覆判斷器，並使用 `EVENT_RULE_PROMPT_PATH` 追加活動規則指令；留空時使用預設值 `活動規則,檔期規則,活動怎麼玩`。 |
 | `GLOBAL_COOLDOWN_SECONDS` | Bot 兩次公開回覆之間的全域冷卻秒數。 | 自行設定，正式直播建議不要太低。 |
 | `USER_COOLDOWN_SECONDS` | 同一使用者兩次被回覆之間的冷卻秒數。 | 自行設定，用來避免單一觀眾連續觸發 bot。 |
 | `MAX_INPUT_LENGTH` | 超過此長度的聊天室訊息會被忽略。 | 自行設定，短一點可降低 prompt injection 和成本風險。 |
@@ -271,6 +282,7 @@ Always reply: <true/false>
 Reply probability: <number>
 LLM reply filter enabled: <true/false>
 Bypass reply when stream offline: <true/false>
+Event rule triggers: <trigger list>
 Custom emotes available: <true/false>
 Stream online: <true/false/unknown>
 ```
@@ -285,10 +297,10 @@ Stream online: <true/false/unknown>
 6. 如果訊息來自 `TWITCH_OWNER_ID`，預設忽略；只有內容包含 `OWNER_FORCE_TRIGGERS` 任一強制觸發詞時才強制回覆，並略過一般忽略規則、冷卻、機率與 LLM 回覆判斷器。
 7. 忽略空訊息、黑名單、過長訊息、指令和網址。
 8. 檢查全域與使用者冷卻時間。
-9. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
+9. 若一般觀眾訊息包含 `FORCE_TRIGGERS` 任一強制觸發詞，或包含 `EVENT_RULE_TRIGGERS` 任一檔期活動規則觸發詞，直接進入回覆流程，並略過隨機回覆機率與 LLM 回覆判斷器。
 10. 否則依 `ALWAYS_REPLY` 或 `REPLY_PROBABILITY` 決定是否回覆。
-11. 若未命中 `FORCE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
-12. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆；若自訂表情符號已啟用且 JSON 成功載入，模型可依情境加入可用表情符號。
+11. 若未命中 `FORCE_TRIGGERS` / `EVENT_RULE_TRIGGERS` 且啟用 `LLM_REPLY_FILTER_ENABLED`，先讓 LLM 判斷是否值得回覆。
+12. 使用 `prompt/system_prompt.txt`、聊天室訊息，以及同一觀眾最近的短期上下文產生 GPT 回覆；若命中 `EVENT_RULE_TRIGGERS`，會追加 `prompt/event_rule_prompt.txt` 的活動規則指令；若自訂表情符號已啟用且 JSON 成功載入，模型可依情境加入可用表情符號。
 13. 發送 `@username <reply>` 到 Twitch 聊天室。
 14. 將這一輪「觀眾訊息 + bot 回覆」存入該觀眾的短期上下文，供後續連續對話使用。
 

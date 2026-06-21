@@ -3,6 +3,7 @@
 !.env.example
 
 prompt/system_prompt.txt
+prompt/event_rule_prompt.txt
 .tio.tokens.json
 
 .venv/
@@ -12,4 +13,3 @@ __pycache__/
 
 .git/
 .github/workflows/*.log
-
