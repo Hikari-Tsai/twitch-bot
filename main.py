@@ -67,9 +67,15 @@ PROMPT_PATH = Path(os.getenv("PROMPT_PATH", "prompt/system_prompt.txt"))
 OWNER_COMMAND_PROMPT_PATH = Path(
     os.getenv("OWNER_COMMAND_PROMPT_PATH", "prompt/owner_command_prompt.txt")
 )
+EVENT_RULE_PROMPT_PATH = Path(os.getenv("EVENT_RULE_PROMPT_PATH", "prompt/event_rule_prompt.txt"))
 DEFAULT_OWNER_COMMAND_PROMPT = (
     "這是台主 {username} 交辦的直播聊天室任務。請優先遵守台主要求並直接執行，"
     "用適合直播聊天室公開顯示的方式簡短回應。"
+)
+DEFAULT_EVENT_RULE_PROMPT = (
+    "觀眾正在詢問本次檔期活動規則。請優先根據你已知的檔期活動規則回答，"
+    "只回答和活動玩法、條件、期限、獎勵或限制相關的重點。"
+    "如果目前 prompt 裡沒有明確活動規則，請簡短說明目前沒有查到活動規則，請觀眾稍等台主補充。"
 )
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -107,6 +113,8 @@ DEFAULT_FORCE_TRIGGERS = (
 FORCE_TRIGGERS = env_list("FORCE_TRIGGERS", DEFAULT_FORCE_TRIGGERS)
 DEFAULT_OWNER_FORCE_TRIGGERS = ("@小助手",)
 OWNER_FORCE_TRIGGERS = env_list("OWNER_FORCE_TRIGGERS", DEFAULT_OWNER_FORCE_TRIGGERS)
+DEFAULT_EVENT_RULE_TRIGGERS = ("活動規則", "檔期規則", "活動怎麼玩")
+EVENT_RULE_TRIGGERS = env_list("EVENT_RULE_TRIGGERS", DEFAULT_EVENT_RULE_TRIGGERS)
 
 
 def load_custom_emotes() -> dict[str, str]:
@@ -355,6 +363,11 @@ def has_owner_force_triggers(message: str) -> bool:
     return any(trigger.lower() in lowered for trigger in OWNER_FORCE_TRIGGERS)
 
 
+def has_event_rule_trigger(message: str) -> bool:
+    lowered = message.lower()
+    return any(trigger.lower() in lowered for trigger in EVENT_RULE_TRIGGERS)
+
+
 def load_system_prompt() -> str:
     if not PROMPT_PATH.exists():
         raise FileNotFoundError(f"找不到 prompt 檔案：{PROMPT_PATH}")
@@ -426,6 +439,26 @@ def load_owner_command_prompt(
     )
 
 
+def load_event_rule_prompt(
+    *,
+    username: str,
+    event_rule_triggers: str,
+    message: str,
+) -> str:
+    if not EVENT_RULE_PROMPT_PATH.exists():
+        prompt = DEFAULT_EVENT_RULE_PROMPT
+    else:
+        prompt = EVENT_RULE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        prompt = prompt or DEFAULT_EVENT_RULE_PROMPT
+
+    return render_prompt_template(
+        prompt,
+        username=username,
+        event_rule_triggers=event_rule_triggers,
+        message=message,
+    )
+
+
 def should_ignore_message(username: str, message: str) -> bool:
     username = username.lower()
     text = message.strip()
@@ -461,7 +494,7 @@ def should_reply(user_key: str, message: str) -> bool:
     if now - last_user_reply_at[user_key] < USER_COOLDOWN_SECONDS:
         return False
 
-    if has_force_trigger(message):
+    if has_force_trigger(message) or has_event_rule_trigger(message):
         return True
 
     if ALWAYS_REPLY:
@@ -609,6 +642,7 @@ def ask_gpt(
     viewer_history_key: str,
     *,
     is_owner_command: bool = False,
+    is_event_rule_request: bool = False,
 ) -> tuple[str, str]:
     system_prompt = load_system_prompt() + build_custom_emotes_instruction()
     user_prompt = (
@@ -626,6 +660,17 @@ def ask_gpt(
         user_prompt = (
             f"聊天室台主 {username} 使用 {owner_force_triggers} 強制觸發：{message}\n\n"
             f"{owner_command_prompt}"
+        )
+    elif is_event_rule_request:
+        event_rule_triggers = ", ".join(EVENT_RULE_TRIGGERS)
+        event_rule_prompt = load_event_rule_prompt(
+            username=username,
+            event_rule_triggers=event_rule_triggers,
+            message=message,
+        )
+        user_prompt = (
+            f"聊天室觀眾 {username} 使用活動規則觸發詞（{event_rule_triggers}）詢問：{message}\n\n"
+            f"{event_rule_prompt}"
         )
 
     try:
@@ -649,6 +694,7 @@ async def ask_gpt_async(
     viewer_history_key: str,
     *,
     is_owner_command: bool = False,
+    is_event_rule_request: bool = False,
 ) -> tuple[str, str]:
     return await asyncio.to_thread(
         ask_gpt,
@@ -656,6 +702,7 @@ async def ask_gpt_async(
         message,
         viewer_history_key,
         is_owner_command=is_owner_command,
+        is_event_rule_request=is_event_rule_request,
     )
 
 
@@ -707,6 +754,7 @@ class GPTTwitchBot(commands.Bot):
         print(f"Reply probability: {REPLY_PROBABILITY}")
         print(f"LLM reply filter enabled: {LLM_REPLY_FILTER_ENABLED}")
         print(f"Bypass reply when stream offline: {BYPASS_REPLY_WHEN_STREAM_OFFLINE}")
+        print(f"Event rule triggers: {', '.join(EVENT_RULE_TRIGGERS)}")
         print(f"Custom emotes available: {custom_emotes_available}")
         print(f"Stream online: {stream_is_online if stream_is_online is not None else 'unknown'}")
 
@@ -730,6 +778,7 @@ class GPTTwitchBot(commands.Bot):
         content: str,
         *,
         is_owner_command: bool = False,
+        is_event_rule_request: bool = False,
     ) -> None:
         global custom_emotes_available, last_global_reply_at
 
@@ -738,6 +787,7 @@ class GPTTwitchBot(commands.Bot):
             content,
             user_key,
             is_owner_command=is_owner_command,
+            is_event_rule_request=is_event_rule_request,
         )
 
         if not reply:
@@ -818,19 +868,26 @@ class GPTTwitchBot(commands.Bot):
                 return
 
             force_triggered = has_force_trigger(content)
+            event_rule_triggered = has_event_rule_trigger(content)
 
             if not should_reply(user_key, content):
                 return
 
-            if LLM_REPLY_FILTER_ENABLED and not force_triggered:
-                # 如果有用 @小助手 等強制觸發詞，就不經過 LLM 判斷，直接回覆。
+            if LLM_REPLY_FILTER_ENABLED and not force_triggered and not event_rule_triggered:
+                # 如果有強制觸發詞或活動規則觸發詞，就不經過 LLM 判斷，直接回覆。
                 should_send, reason = await should_reply_by_llm_async(username, content)
 
                 if not should_send:
                     print(f"LLM skip @{username}: {reason or '不需回應'}")
                     return
 
-            await self.send_gpt_reply(message, username, user_key, content)
+            await self.send_gpt_reply(
+                message,
+                username,
+                user_key,
+                content,
+                is_event_rule_request=event_rule_triggered,
+            )
 
         except Exception as e:
             if is_network_error(e) or is_temporary_api_status_error(e):
