@@ -54,6 +54,7 @@
 - Twitch 開發者應用程式的 Client ID
 - Twitch OAuth token，至少需要以下 scopes：
   - `user:read:chat`
+  - `user:read:emotes`
   - `user:write:chat`
 - OpenAI API key
 
@@ -95,11 +96,12 @@ prompt/event_rule_prompt.txt需要填寫本次檔期活動規則
 | `LLM_REPLY_FILTER_ENABLED` | 是否啟用 LLM 回覆判斷器。`true`/`false`。 | 自行決定；想省 token 或降低延遲可設 `false`。 |
 | `LLM_REPLY_FILTER_MODEL` | 回覆判斷器使用的模型。 | 同 `OPENAI_MODEL`，通常可選較快、較便宜的模型。 |
 | `BYPASS_REPLY_WHEN_STREAM_OFFLINE` | 主播離線時是否略過 LLM 機器人回覆。`true` 時，已確認 `TWITCH_OWNER_ID` 沒有直播就不產生也不送出 LLM 回覆；`false` 時就算下播也會正常回覆(方便測試) | 自行決定。若 bot 只想在開台時互動可設 `true`。 |
-| `CUSTOM_EMOTES_ENABLED` | 是否允許模型使用自訂 Twitch 表情符號。`true` 時會讀取 `CUSTOM_EMOTES_JSON_PATH`，成功載入後模型可依情境自行選用；`false` 時不提供表情符號清單給模型。 | 自行決定。若 bot 帳號不一定有表情符號使用資格，建議先設 `false`。 |
-| `CUSTOM_EMOTES_JSON_PATH` | 自訂表情符號 JSON 檔案路徑。JSON 必須是 object，key 是聊天室中實際送出的表情符號文字，value 是給模型看的用途描述。未設定、檔案不存在或格式錯誤時會自動停用。 | 本機檔案路徑，例如 `custom_emotes.json`。不要放 secret。 |
+| `CUSTOM_EMOTES_JSON_PATH` | 自訂表情符號 JSON 檔案路徑。Bot 啟動時會向 Twitch 查詢帳號實際可用的表情，只啟用 API 與設定檔兩邊都有的項目；沒有可用項目時自動停用。 | 本機檔案路徑，例如 `custom_emotes.json`。不要放 secret。 |
 | `PROMPT_PATH` | system prompt 檔案路徑，預設為 `prompt/system_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/system_prompt.txt.example` 複製。 |
 | `OWNER_COMMAND_PROMPT_PATH` | 台主強制觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/owner_command_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/owner_command_prompt.txt.example` 複製。若檔案不存在，程式會使用內建預設文字。 |
 | `EVENT_RULE_PROMPT_PATH` | 檔期活動規則觸發時追加使用的 prompt 檔案路徑，預設為 `prompt/event_rule_prompt.txt`。 | 本機檔案路徑；初始化時可由 `prompt/event_rule_prompt.txt.example` 複製並填入本次活動規則。若檔案不存在，程式會使用內建預設文字。 |
+
+### 自訂表情符號策略
 
 `CUSTOM_EMOTES_JSON_PATH` 指向的檔案範例：
 
@@ -110,7 +112,27 @@ prompt/event_rule_prompt.txt需要填寫本次檔期活動規則
 }
 ```
 
-key 必須是單一 token，不能包含空白。啟用後，模型會依情境自行決定是否使用 0 到 2 個表情符號；如果 Twitch 送出回覆時疑似因 bot 帳號無法使用自訂表情符號而失敗，程式不會在聊天室送出錯誤訊息，會在本次執行期間停用自訂表情符號，並移除表情符號後重送純文字回覆。
+JSON key 必須是 Twitch 聊天室實際輸出的完整表情文字，且必須是單一 token、不能包含空白；value 是提供給模型的使用情境描述，最多讀取 120 個字元。檔案不存在、格式錯誤或沒有有效項目時，自訂表情會自動停用。
+
+是否啟用不再由環境變數開關決定。Bot 使用 Twitch `Get User Emotes` API 查詢 `TWITCH_BOT_ID` 帳號在 `TWITCH_OWNER_ID` 頻道實際可使用的表情，再與 JSON key 取交集：
+
+- 交集至少有一個項目時自動啟用，且只把確認可用的項目提供給模型。
+- 沒有交集時自動停用，不會把設定檔中無權使用的表情提供給模型。
+- 判斷依據是帳號的實際表情使用資格，不只訂閱狀態，因此也能正確涵蓋贈送訂閱、續訂、訂閱到期或其他 Twitch 授予的使用資格。
+- 模型每次回覆可依情境選擇使用 0 到 2 個已確認可用的表情。
+
+Bot 會在下列時機重新檢查：
+
+- Bot 啟動並載入最新 token 後。
+- 每次收到 `stream.online` 直播開始事件時。
+- 常駐運作期間每 15 分鐘。
+- Twitch access token 自動刷新後。
+
+查詢透過背景執行緒進行，不會阻塞 Twitch 聊天室事件。若 API 暫時無法連線、回傳錯誤或無法確認權限，Bot 會採保守策略自動停用自訂表情，並在下一個檢查時機再次嘗試；訂閱或使用資格恢復後不需重啟服務。
+
+如果 Twitch 實際送出含表情的回覆仍然失敗，Bot 不會把錯誤訊息送進聊天室，而會立即停用自訂表情、移除該回覆中的自訂表情，再重送純文字版本；後續定期檢查確認權限可用後可以再次啟用。
+
+`Get User Emotes` API 要求 token 包含 `user:read:emotes` scope。舊 token 缺少此 scope 時，請執行一次 `python3 scripts/get_twitch_device_token.py` 重新授權；之後不需要人工操作表情開關。
 
 `OWNER_COMMAND_PROMPT_PATH` 指向的 prompt 檔案可使用以下變數，程式讀取時會自動帶入實際值：
 
@@ -128,7 +150,7 @@ key 必須是單一 token，不能包含空白。啟用後，模型會依情境�
 
 | 變數 | 說明 | 取得方式 |
 | --- | --- | --- |
-| `TWITCH_TOKEN` | Bot 帳號的 OAuth user access token，可包含或不包含 `oauth:` 前綴。 | 建議用 Twitch CLI：`twitch token --user-token --scopes "user:read:chat user:write:chat"`。Twitch chat EventSub 讀取訊息需要 `user:read:chat`，發送聊天訊息需要 `user:write:chat`。 |
+| `TWITCH_TOKEN` | Bot 帳號的 OAuth user access token，可包含或不包含 `oauth:` 前綴。 | 建議用 Twitch CLI：`twitch token --user-token --scopes "user:read:chat user:read:emotes user:write:chat"`。 |
 | `TWITCH_REFRESH_TOKEN` | `TWITCH_TOKEN` 對應的 OAuth refresh token。長時間常駐建議設定，讓 TwitchIO 能在 access token 過期或 websocket reconnect 後自動刷新並重新訂閱 EventSub。 | 使用能回傳 refresh token 的 OAuth flow 產生。不要提交到 Git。 |
 | `TWITCH_CLIENT_ID` | Twitch Developer Console 應用程式的 Client ID。 | 到 [Twitch Developer Console](https://dev.twitch.tv/console/apps) 建立或選擇 app，複製 Client ID。 |
 | `TWITCH_CLIENT_SECRET` | 目前程式可讀取但不是 token 登入的主要必填項；若未使用 client secret flow 可留空或註解。 | 在 Twitch Developer Console 的 app 頁面產生。不要提交到 Git。 |
@@ -161,10 +183,13 @@ python3 scripts/get_twitch_device_token.py
 
 ```text
 user:read:chat
+user:read:emotes
 user:write:chat
 ```
 
 `TWITCH_REFRESH_TOKEN` 屬於 secret，等同於可持續換發 access token；不要提交、貼到公開文件、印到 log，或放進 prompt。
+
+Bot 啟動後會由 TwitchIO 管理 token。每次 access token 自動刷新時，程式會以原子替換方式同步更新 `.env` 的 `TWITCH_TOKEN` 與 `TWITCH_REFRESH_TOKEN`，並更新 `.tio.tokens.json`。啟動時若兩者內容不同，會優先採用 TwitchIO cache 中可成功驗證／刷新的版本，再同步回 `.env`，避免因 refresh token 輪替而反覆開啟瀏覽器授權。
 
 ### 回覆策略
 
@@ -316,6 +341,7 @@ Stream online: <true/false/unknown>
 
 ```text
 user:read:chat
+user:read:emotes
 user:write:chat
 ```
 
@@ -333,7 +359,7 @@ python3 scripts/get_twitch_device_token.py
 
 這是 TwitchIO 在 websocket reconnect 後，嘗試把舊的 EventSub subscription 重新建立到新 websocket session 時失敗。常見原因是 `TWITCH_TOKEN` 已過期、缺少 `TWITCH_REFRESH_TOKEN` 無法自動刷新、Twitch 短暫網路/API 錯誤，或程式阻塞 event loop 導致 websocket 心跳與重連處理延遲。
 
-請先檢查錯誤訊息後面的 HTTP 狀態碼：如果是 401/403，重新產生 bot 帳號 token，確認 scope 仍包含 `user:read:chat` 和 `user:write:chat`，並設定對應的 `TWITCH_REFRESH_TOKEN`；如果是 5xx 或網路 timeout，通常是暫時性連線問題，重啟 bot 會重新建立 subscription。程式已把 OpenAI 同步呼叫移出 websocket event loop，降低長時間運作時錯過 heartbeat/reconnect 的機率。
+請先檢查錯誤訊息後面的 HTTP 狀態碼：如果是 401/403，重新產生 bot 帳號 token，確認 scope 仍包含 `user:read:chat`、`user:read:emotes` 和 `user:write:chat`，並設定對應的 `TWITCH_REFRESH_TOKEN`；如果是 5xx 或網路 timeout，通常是暫時性連線問題，重啟 bot 會重新建立 subscription。程式已把 OpenAI 同步呼叫移出 websocket event loop，降低長時間運作時錯過 heartbeat/reconnect 的機率。
 
 ### `找不到 prompt 檔案`
 

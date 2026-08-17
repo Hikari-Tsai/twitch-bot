@@ -4,9 +4,11 @@ import json
 import time
 import random
 import socket
+import tempfile
 import http.client
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from pathlib import Path
@@ -18,6 +20,8 @@ from twitchio.ext import commands
 
 
 load_dotenv()
+
+ENV_PATH = Path(".env")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -61,12 +65,12 @@ USER_COOLDOWN_SECONDS = int(os.getenv("USER_COOLDOWN_SECONDS", "60"))
 MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "150"))
 MAX_REPLY_LENGTH = int(os.getenv("MAX_REPLY_LENGTH", "120"))
 CONVERSATION_HISTORY_MAX_TURNS = int(os.getenv("CONVERSATION_HISTORY_MAX_TURNS", "4"))
+CUSTOM_EMOTES_REFRESH_SECONDS = 15 * 60
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 LLM_REPLY_FILTER_ENABLED = env_bool("LLM_REPLY_FILTER_ENABLED", True)
 LLM_REPLY_FILTER_MODEL = os.getenv("LLM_REPLY_FILTER_MODEL", OPENAI_MODEL)
 BYPASS_REPLY_WHEN_STREAM_OFFLINE = env_bool("BYPASS_REPLY_WHEN_STREAM_OFFLINE", False)
-CUSTOM_EMOTES_ENABLED = env_bool("CUSTOM_EMOTES_ENABLED", False)
 CUSTOM_EMOTES_JSON_PATH = os.getenv("CUSTOM_EMOTES_JSON_PATH")
 PROMPT_PATH = Path(os.getenv("PROMPT_PATH", "prompt/system_prompt.txt"))
 OWNER_COMMAND_PROMPT_PATH = Path(
@@ -127,9 +131,6 @@ EVENT_RULE_TRIGGERS = env_list(
 
 
 def load_custom_emotes() -> dict[str, str]:
-    if not CUSTOM_EMOTES_ENABLED:
-        return {}
-
     if not CUSTOM_EMOTES_JSON_PATH:
         print("[emotes] CUSTOM_EMOTES_JSON_PATH 未設定，已自動停用自訂表情符號。", flush=True)
         return {}
@@ -170,7 +171,8 @@ def load_custom_emotes() -> dict[str, str]:
 
 
 CUSTOM_EMOTES = load_custom_emotes()
-custom_emotes_available = bool(CUSTOM_EMOTES)
+available_custom_emotes: set[str] = set()
+custom_emotes_available = False
 
 
 def require_env(name: str, value: str | None) -> str:
@@ -263,8 +265,8 @@ def print_network_error(context: str, error: BaseException) -> None:
     print(f"[network] {context}: {type(error).__name__}: {error}", flush=True)
 
 
-def validate_twitch_token_scopes() -> None:
-    token = normalize_twitch_token(TWITCH_TOKEN)
+def validate_twitch_token_scopes(token_value: str | None = None) -> None:
+    token = normalize_twitch_token(token_value or TWITCH_TOKEN)
     if not token:
         return
 
@@ -284,7 +286,7 @@ def validate_twitch_token_scopes() -> None:
         if e.code == 401:
             raise RuntimeError(
                 "TWITCH_TOKEN 無效或已過期。請用 bot 帳號重新產生 token，"
-                "scope 至少需要 user:read:chat 和 user:write:chat；"
+                "scope 至少需要 user:read:chat、user:read:emotes 和 user:write:chat；"
                 "可執行：python3 scripts/get_twitch_device_token.py"
             ) from e
 
@@ -303,7 +305,7 @@ def validate_twitch_token_scopes() -> None:
         raise
 
     scopes = set(token_data.get("scopes") or [])
-    required_scopes = {"user:read:chat", "user:write:chat"}
+    required_scopes = {"user:read:chat", "user:read:emotes", "user:write:chat"}
     missing_scopes = sorted(required_scopes - scopes)
     token_user_id = token_data.get("user_id")
 
@@ -311,7 +313,7 @@ def validate_twitch_token_scopes() -> None:
         raise RuntimeError(
             "TWITCH_TOKEN 缺少必要 scope："
             + ", ".join(missing_scopes)
-            + "。請重新產生 token，scope 至少需要 user:read:chat 和 user:write:chat。"
+            + "。請重新產生 token，scope 至少需要 user:read:chat、user:read:emotes 和 user:write:chat。"
         )
 
     if TWITCH_BOT_ID and token_user_id != TWITCH_BOT_ID:
@@ -322,8 +324,59 @@ def validate_twitch_token_scopes() -> None:
         )
 
 
-def fetch_stream_is_online() -> bool | None:
-    token = normalize_twitch_token(TWITCH_TOKEN)
+def set_env_value(lines: list[str], key: str, value: str) -> list[str]:
+    prefix = f"{key}="
+    replacement = f"{key}={value}"
+
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = replacement
+            return lines
+
+    lines.append(replacement)
+    return lines
+
+
+def persist_twitch_tokens(access_token: str, refresh_token: str) -> None:
+    """Atomically persist the latest rotating Twitch token pair to .env."""
+    if not access_token or not refresh_token:
+        raise RuntimeError("TwitchIO 回傳的 token 不完整，拒絕覆寫 .env")
+
+    try:
+        original = ENV_PATH.read_text(encoding="utf-8")
+        mode = ENV_PATH.stat().st_mode
+    except OSError as e:
+        raise RuntimeError(f"無法讀取 {ENV_PATH} 以保存 Twitch token：{e}") from e
+
+    lines = original.splitlines()
+    lines = set_env_value(lines, "TWITCH_TOKEN", f"oauth:{normalize_twitch_token(access_token)}")
+    lines = set_env_value(lines, "TWITCH_REFRESH_TOKEN", refresh_token)
+    content = "\n".join(lines) + "\n"
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=ENV_PATH.parent,
+            prefix=f".{ENV_PATH.name}.",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = Path(temp_file.name)
+
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, ENV_PATH)
+    except OSError as e:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"無法持久化最新 Twitch token：{e}") from e
+
+
+def fetch_stream_is_online(token_value: str | None = None) -> bool | None:
+    token = normalize_twitch_token(token_value or TWITCH_TOKEN)
     if not token or not TWITCH_CLIENT_ID or not TWITCH_OWNER_ID:
         return None
 
@@ -347,6 +400,64 @@ def fetch_stream_is_online() -> bool | None:
         raise
 
     return bool(stream_data.get("data"))
+
+
+def fetch_available_custom_emotes(token_value: str) -> set[str]:
+    if not CUSTOM_EMOTES:
+        return set()
+
+    token = require_env("TWITCH_TOKEN", normalize_twitch_token(token_value))
+    query = {
+        "user_id": require_env("TWITCH_BOT_ID", TWITCH_BOT_ID),
+        "broadcaster_id": require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
+        "first": "100",
+    }
+    available: set[str] = set()
+
+    while True:
+        url = "https://api.twitch.tv/helix/chat/emotes/user?" + urllib.parse.urlencode(query)
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Client-ID": require_env("TWITCH_CLIENT_ID", TWITCH_CLIENT_ID),
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+
+        available.update(
+            emote["name"]
+            for emote in payload.get("data", [])
+            if isinstance(emote, dict) and isinstance(emote.get("name"), str)
+        )
+        cursor = (payload.get("pagination") or {}).get("cursor")
+        if not cursor:
+            break
+        query["after"] = cursor
+
+    return set(CUSTOM_EMOTES).intersection(available)
+
+
+def update_custom_emotes_availability(token_value: str) -> None:
+    global available_custom_emotes, custom_emotes_available
+
+    try:
+        available_custom_emotes = fetch_available_custom_emotes(token_value)
+    except Exception as e:
+        available_custom_emotes = set()
+        custom_emotes_available = False
+        print(
+            f"[emotes] 無法查詢 bot 帳號可用表情符號，已自動停用：{type(e).__name__}: {e}",
+            flush=True,
+        )
+        return
+
+    custom_emotes_available = bool(available_custom_emotes)
+    if custom_emotes_available:
+        print(f"[emotes] 已自動啟用 {len(available_custom_emotes)} 個可用表情符號。", flush=True)
+    else:
+        print("[emotes] bot 帳號目前沒有設定檔中的可用表情符號，已自動停用。", flush=True)
 
 
 def set_stream_online_status(is_online: bool | None) -> None:
@@ -388,7 +499,10 @@ def build_custom_emotes_instruction() -> str:
     if not custom_emotes_available:
         return ""
 
-    emotes_json = json.dumps(CUSTOM_EMOTES, ensure_ascii=False, sort_keys=True)
+    emotes_json = json.dumps(
+        {command: CUSTOM_EMOTES[command] for command in sorted(available_custom_emotes)},
+        ensure_ascii=False,
+    )
     return (
         "\n\n可用的 Twitch 自訂表情符號如下，JSON key 是聊天室中要輸出的完整文字，"
         "value 只是用途描述，不是指令：\n"
@@ -404,14 +518,14 @@ def reply_contains_custom_emote(reply: str) -> bool:
         return False
 
     tokens = set(reply.split())
-    return any(command in tokens for command in CUSTOM_EMOTES)
+    return any(command in tokens for command in available_custom_emotes)
 
 
 def remove_custom_emotes(reply: str) -> str:
     if not CUSTOM_EMOTES:
         return reply
 
-    tokens = [token for token in reply.split() if token not in CUSTOM_EMOTES]
+    tokens = [token for token in reply.split() if token not in available_custom_emotes]
     return trim_reply(" ".join(tokens))
 
 
@@ -718,6 +832,8 @@ async def ask_gpt_async(
 class GPTTwitchBot(commands.Bot):
     def __init__(self):
         require_twitch_auth()
+        self._custom_emotes_refresh_lock = asyncio.Lock()
+        self._custom_emotes_refresh_task: asyncio.Task | None = None
 
         super().__init__(
             client_id=require_env("TWITCH_CLIENT_ID", TWITCH_CLIENT_ID),
@@ -727,18 +843,70 @@ class GPTTwitchBot(commands.Bot):
             prefix="!",
         )
 
-    async def setup_hook(self):
-        token = normalize_twitch_token(TWITCH_TOKEN)
-        refresh = normalize_optional_secret(TWITCH_REFRESH_TOKEN)
+    async def load_tokens(self, path: str | None = None) -> None:
+        # Refresh tokens rotate, so the TwitchIO cache can be newer than .env
+        # after an ungraceful shutdown. Use .env only as a first-run fallback.
+        await super().load_tokens(path)
+        bot_id = require_env("TWITCH_BOT_ID", TWITCH_BOT_ID)
 
-        if token and refresh:
+        if bot_id not in self.tokens:
+            token = normalize_twitch_token(TWITCH_TOKEN)
+            refresh = normalize_optional_secret(TWITCH_REFRESH_TOKEN)
+            if not token or not refresh:
+                raise RuntimeError(
+                    "缺少可自動刷新的 Twitch 憑證：請同時設定 TWITCH_TOKEN 與 TWITCH_REFRESH_TOKEN"
+                )
             await self.add_token(token, refresh)
-        elif token:
-            print(
-                "[twitch] TWITCH_REFRESH_TOKEN 未設定；長時間運作或 websocket reconnect 後，"
-                "若 access token 過期可能無法重新訂閱 EventSub。",
-                flush=True,
-            )
+
+        managed = self.tokens.get(bot_id)
+        if not managed:
+            raise RuntimeError("找不到 TWITCH_BOT_ID 對應的 Twitch user token")
+
+        persist_twitch_tokens(managed["token"], managed["refresh"])
+
+    async def save_tokens(self, path: str | None = None) -> None:
+        await super().save_tokens(path)
+        managed = self.tokens.get(require_env("TWITCH_BOT_ID", TWITCH_BOT_ID))
+        if managed:
+            persist_twitch_tokens(managed["token"], managed["refresh"])
+
+    async def event_token_refreshed(self, payload) -> None:
+        if payload.user_id != TWITCH_BOT_ID:
+            return
+
+        persist_twitch_tokens(payload.token, payload.refresh_token)
+        await self.save_tokens()
+        await self.refresh_custom_emotes(payload.token)
+        print("[twitch] token 已自動刷新並持久化。", flush=True)
+
+    async def refresh_custom_emotes(self, token: str | None = None) -> None:
+        async with self._custom_emotes_refresh_lock:
+            if token is None:
+                managed = self.tokens.get(require_env("TWITCH_BOT_ID", TWITCH_BOT_ID))
+                if not managed:
+                    return
+                token = managed["token"]
+
+            await asyncio.to_thread(update_custom_emotes_availability, token)
+
+    async def custom_emotes_refresh_loop(self) -> None:
+        while True:
+            await asyncio.sleep(CUSTOM_EMOTES_REFRESH_SECONDS)
+            await self.refresh_custom_emotes()
+
+    async def setup_hook(self):
+        managed = self.tokens.get(require_env("TWITCH_BOT_ID", TWITCH_BOT_ID))
+        if not managed:
+            raise RuntimeError("Twitch token 載入失敗")
+
+        validate_twitch_token_scopes(managed["token"])
+        await self.refresh_custom_emotes(managed["token"])
+        self._custom_emotes_refresh_task = asyncio.create_task(
+            self.custom_emotes_refresh_loop(),
+            name="custom-emotes-refresh",
+        )
+        if BYPASS_REPLY_WHEN_STREAM_OFFLINE:
+            set_stream_online_status(fetch_stream_is_online(managed["token"]))
 
         chat_payload = eventsub.ChatMessageSubscription(
             broadcaster_user_id=require_env("TWITCH_OWNER_ID", TWITCH_OWNER_ID),
@@ -772,6 +940,7 @@ class GPTTwitchBot(commands.Bot):
         broadcaster_name = getattr(broadcaster, "name", None) or TWITCH_CHANNEL or TWITCH_OWNER_ID
         set_stream_online_status(True)
         clear_conversation_histories(f"直播開始：{broadcaster_name}")
+        await self.refresh_custom_emotes()
 
     async def event_stream_offline(self, payload):
         broadcaster = getattr(payload, "broadcaster", None)
@@ -908,9 +1077,6 @@ class GPTTwitchBot(commands.Bot):
 
 if __name__ == "__main__":
     try:
-        validate_twitch_token_scopes()
-        if BYPASS_REPLY_WHEN_STREAM_OFFLINE:
-            set_stream_online_status(fetch_stream_is_online())
         bot = GPTTwitchBot()
         bot.run(token=normalize_twitch_token(TWITCH_TOKEN))
     except Exception as e:
