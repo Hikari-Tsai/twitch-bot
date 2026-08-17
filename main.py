@@ -16,6 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from twitchio import eventsub
+from twitchio.exceptions import InvalidTokenException
 from twitchio.ext import commands
 
 
@@ -844,19 +845,25 @@ class GPTTwitchBot(commands.Bot):
         )
 
     async def load_tokens(self, path: str | None = None) -> None:
-        # Refresh tokens rotate, so the TwitchIO cache can be newer than .env
-        # after an ungraceful shutdown. Use .env only as a first-run fallback.
+        # Load the cache as a fallback, then prefer .env. Runtime refreshes are
+        # persisted to .env immediately, and .env may contain newly granted
+        # scopes that an older but still refreshable cache token does not have.
         await super().load_tokens(path)
         bot_id = require_env("TWITCH_BOT_ID", TWITCH_BOT_ID)
 
-        if bot_id not in self.tokens:
-            token = normalize_twitch_token(TWITCH_TOKEN)
-            refresh = normalize_optional_secret(TWITCH_REFRESH_TOKEN)
-            if not token or not refresh:
-                raise RuntimeError(
-                    "缺少可自動刷新的 Twitch 憑證：請同時設定 TWITCH_TOKEN 與 TWITCH_REFRESH_TOKEN"
-                )
-            await self.add_token(token, refresh)
+        token = normalize_twitch_token(TWITCH_TOKEN)
+        refresh = normalize_optional_secret(TWITCH_REFRESH_TOKEN)
+        if token and refresh:
+            try:
+                await self.add_token(token, refresh)
+            except InvalidTokenException:
+                if bot_id not in self.tokens:
+                    raise
+                print("[twitch] .env token 無效，改用 TwitchIO cache 中可刷新的 token。", flush=True)
+        elif bot_id not in self.tokens:
+            raise RuntimeError(
+                "缺少可自動刷新的 Twitch 憑證：請同時設定 TWITCH_TOKEN 與 TWITCH_REFRESH_TOKEN"
+            )
 
         managed = self.tokens.get(bot_id)
         if not managed:
