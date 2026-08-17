@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -7,7 +9,7 @@ from pathlib import Path
 
 
 ENV_PATH = Path(".env")
-SCOPES = "user:read:chat user:write:chat"
+SCOPES = "user:read:chat user:read:emotes user:write:chat"
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 
@@ -59,7 +61,29 @@ def update_env(path: Path, access_token: str, refresh_token: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     lines = set_env_value(lines, "TWITCH_TOKEN", f"oauth:{access_token}")
     lines = set_env_value(lines, "TWITCH_REFRESH_TOKEN", refresh_token)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    content = "\n".join(lines) + "\n"
+    mode = path.stat().st_mode
+    temp_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = Path(temp_file.name)
+
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+    except OSError:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
 
 
 def main() -> None:
