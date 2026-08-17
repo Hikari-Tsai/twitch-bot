@@ -28,13 +28,18 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+def env_list(
+    name: str,
+    default: tuple[str, ...],
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, ...]:
     value = os.getenv(name)
     if value is None:
         return default
 
     items = tuple(item.strip() for item in value.split(",") if item.strip())
-    return items or default
+    return items if items or allow_empty else default
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -114,7 +119,11 @@ FORCE_TRIGGERS = env_list("FORCE_TRIGGERS", DEFAULT_FORCE_TRIGGERS)
 DEFAULT_OWNER_FORCE_TRIGGERS = ("@小助手",)
 OWNER_FORCE_TRIGGERS = env_list("OWNER_FORCE_TRIGGERS", DEFAULT_OWNER_FORCE_TRIGGERS)
 DEFAULT_EVENT_RULE_TRIGGERS = ("活動規則", "檔期規則", "活動怎麼玩")
-EVENT_RULE_TRIGGERS = env_list("EVENT_RULE_TRIGGERS", DEFAULT_EVENT_RULE_TRIGGERS)
+EVENT_RULE_TRIGGERS = env_list(
+    "EVENT_RULE_TRIGGERS",
+    DEFAULT_EVENT_RULE_TRIGGERS,
+    allow_empty=True,
+)
 
 
 def load_custom_emotes() -> dict[str, str]:
