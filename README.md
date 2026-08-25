@@ -189,7 +189,7 @@ user:write:chat
 
 `TWITCH_REFRESH_TOKEN` 屬於 secret，等同於可持續換發 access token；不要提交、貼到公開文件、印到 log，或放進 prompt。
 
-Bot 啟動後會由 TwitchIO 管理 token。每次 access token 自動刷新時，程式會以原子替換方式同步更新 `.env` 的 `TWITCH_TOKEN` 與 `TWITCH_REFRESH_TOKEN`，並更新 `.tio.tokens.json`。啟動時會優先採用 `.env`，確保重新授權後新增的 scope 不會被舊 cache 覆蓋；只有 `.env` token 無效時才退回 TwitchIO cache 中可成功驗證／刷新的版本，之後再把最新結果同步回 `.env`。
+Bot 啟動後會由 TwitchIO 管理 token。每次 access token 自動刷新時，程式會以原子替換方式同步更新 `.env` 的 `TWITCH_TOKEN`、`TWITCH_REFRESH_TOKEN`、`.tio.tokens.json`，以及 TwitchIO 內部用於一般 API 請求的 app-token slot。這讓 Device Code Flow 在未設定 `TWITCH_CLIENT_SECRET` 時，也不會於舊 access token 過期後誤走 client-credentials flow。啟動時會優先採用 `.env`，確保重新授權後新增的 scope 不會被舊 cache 覆蓋；只有 `.env` token 無效時才退回 TwitchIO cache 中可成功驗證／刷新的版本，之後再把最新結果同步回 `.env`。
 
 ### 回覆策略
 
