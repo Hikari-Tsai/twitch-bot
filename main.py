@@ -844,6 +844,26 @@ class GPTTwitchBot(commands.Bot):
             prefix="!",
         )
 
+    def sync_app_token(self, token: str) -> None:
+        """Keep TwitchIO's app-token slot aligned with the managed user token.
+
+        The bot intentionally supports Twitch's Device Code Flow without a
+        client secret.  ``Bot.run(token=...)`` stores that user token in
+        TwitchIO's app-token slot, but TwitchIO does not update the slot when
+        it later refreshes the managed user token.  If the stale token gets a
+        401, TwitchIO otherwise falls back to the client-credentials flow,
+        which cannot work without a client secret.
+        """
+        normalized = normalize_twitch_token(token)
+        if not normalized:
+            raise RuntimeError("無法同步空白的 Twitch app token")
+
+        http = getattr(self, "_http", None)
+        if http is None or not hasattr(http, "_app_token"):
+            raise RuntimeError("目前 TwitchIO 版本不支援同步 app token")
+
+        http._app_token = normalized
+
     async def load_tokens(self, path: str | None = None) -> None:
         # Load the cache as a fallback, then prefer .env. Runtime refreshes are
         # persisted to .env immediately, and .env may contain newly granted
@@ -869,6 +889,7 @@ class GPTTwitchBot(commands.Bot):
         if not managed:
             raise RuntimeError("找不到 TWITCH_BOT_ID 對應的 Twitch user token")
 
+        self.sync_app_token(managed["token"])
         persist_twitch_tokens(managed["token"], managed["refresh"])
 
     async def save_tokens(self, path: str | None = None) -> None:
@@ -881,6 +902,7 @@ class GPTTwitchBot(commands.Bot):
         if payload.user_id != TWITCH_BOT_ID:
             return
 
+        self.sync_app_token(payload.token)
         persist_twitch_tokens(payload.token, payload.refresh_token)
         await self.save_tokens()
         await self.refresh_custom_emotes(payload.token)
